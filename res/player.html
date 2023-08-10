@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kirottu's streaming den</title>
+  <link rel="icon" href="/harold.png">
+</head>
+
+<body>
+  <div id="player_wrapper" style="height:97vh;">
+    <!-- OvenPlayer will be initialized inside this element. -->
+    <div id="player_id"></div>
+
+  </div>
+
+  <!-- Load OvenPlayer via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
+
+  <script>
+    // Initialize OvenPlayer
+    const player = OvenPlayer.create('player_id', {
+      sources: [
+        {
+          label: 'label_for_webrtc',
+          // Set the type to 'webrtc'
+          type: 'webrtc',
+          // Set the file to WebRTC Signaling URL with OvenMediaEngine 
+          file: 'wss://{host}:3334/app/{stream}'
+        }
+      ],
+      timeout: 600000,
+    });
+  </script>
+</body>
+
+</html>
