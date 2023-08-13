@@ -19,6 +19,7 @@ struct Config {
     api_keys: HashMap<String, String>,
     bind: String,
     host: String,
+    ome_host: String,
     ome_api_host: String,
     ome_api_credentials: String,
 }
@@ -356,24 +357,31 @@ impl Api {
     }
 
     #[oai(path = "/dashboard", method = "get")]
-    async fn dashboard(&self, api_key: Query<String>) -> Result<Html<String>> {
-        let stream = self
-            .config
-            .api_keys
-            .get(&api_key.0)
-            .ok_or(StatusCode::UNAUTHORIZED)?;
+    async fn dashboard(&self, api_key: Query<Option<String>>) -> Result<Html<String>> {
+        match api_key.0 {
+            Some(key) => {
+                let stream = self
+                    .config
+                    .api_keys
+                    .get(&key)
+                    .ok_or(StatusCode::UNAUTHORIZED)?;
 
-        Ok(Html(html! {"../res/dashboard.html",
-            "{stream}" => stream,
-            "{api_key}" => api_key
-        }))
+                Ok(Html(html! {"../res/dashboard.html",
+                    "{stream}" => stream,
+                    "{api_key}" => key
+                }))
+            }
+            None => Ok(Html(
+                html! {"../res/login-redirect.html", "{host}" => self.config.host},
+            )),
+        }
     }
 
     #[oai(path = "/player/:stream", method = "get")]
     async fn player(&self, stream: Path<String>) -> Html<String> {
         Html(html! {"../res/player.html",
             "{stream}" => stream,
-            "{host}" => self.config.host
+            "{host}" => self.config.ome_host
         })
     }
 }
