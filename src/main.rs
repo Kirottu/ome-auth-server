@@ -104,8 +104,16 @@ enum AuthResponse {
     Closing(Json<Empty>),
 }
 
+#[derive(Object, Deserialize)]
+struct LoginForm {
+    api_key: String,
+}
+
 /// Macro to easily fill up templates
-macro_rules! template {
+macro_rules! html {
+    ( $html:literal ) => {
+        include_str!($html).to_owned()
+    };
     ( $html:literal, $( $from:literal => $to:expr ),* ) => {
         {
             let mut res = include_str!($html).to_owned();
@@ -286,7 +294,7 @@ impl Api {
             .queue
             .iter()
             .map(|(client, request)| {
-                template! {"../res/queued_connection.html",
+                html! {"../res/queued_connection.html",
                     "{ip}" => client.address,
                     "{port}" => client.port,
                     "{elapsed}" => request.instant.elapsed().as_secs(),
@@ -296,9 +304,7 @@ impl Api {
             })
             .collect::<String>();
 
-        Ok(Html(
-            template! {"../res/queue.html", "{content}" => &content},
-        ))
+        Ok(Html(html! {"../res/queue.html", "{content}" => &content}))
     }
 
     #[oai(path = "/statistics", method = "get")]
@@ -327,7 +333,7 @@ impl Api {
                 tracing::error!("Error decoding JSON received from OME: {}", why);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-            Ok(Html(template! {"../res/statistics.html",
+            Ok(Html(html! {"../res/statistics.html",
                 "{connections}" => statistics.response.total_connections,
                 "{start_time}" => statistics.response.created_time,
                 "{total_in}" => statistics.response.total_bytes_in / 1_000_000,
@@ -335,13 +341,18 @@ impl Api {
             }))
         } else {
             let not_running = r#"<span class="error">Not running!</span>"#;
-            Ok(Html(template! {"../res/statistics.html",
+            Ok(Html(html! {"../res/statistics.html",
                 "{connections}" => not_running,
                 "{start_time}" => not_running,
                 "{total_in}" => not_running,
                 "{total_out}" => not_running
             }))
         }
+    }
+
+    #[oai(path = "/dashboard/login", method = "get")]
+    async fn login(&self) -> Html<String> {
+        Html(html! { "../res/login.html" })
     }
 
     #[oai(path = "/dashboard", method = "get")]
@@ -352,7 +363,7 @@ impl Api {
             .get(&api_key.0)
             .ok_or(StatusCode::UNAUTHORIZED)?;
 
-        Ok(Html(template! {"../res/dashboard.html",
+        Ok(Html(html! {"../res/dashboard.html",
             "{stream}" => stream,
             "{api_key}" => api_key
         }))
@@ -360,7 +371,7 @@ impl Api {
 
     #[oai(path = "/player/:stream", method = "get")]
     async fn player(&self, stream: Path<String>) -> Html<String> {
-        Html(template! {"../res/player.html",
+        Html(html! {"../res/player.html",
             "{stream}" => stream,
             "{host}" => self.config.host
         })
