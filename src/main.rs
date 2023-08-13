@@ -4,9 +4,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use futures::StreamExt;
 use poem::{http::StatusCode, listener::TcpListener, EndpointExt, Error, Result, Route, Server};
 use poem_openapi::{
-    param::{Path, Query},
+    param::Query,
     payload::{Form, Html, Json},
     ApiResponse, Object, OpenApi, OpenApiService,
 };
@@ -316,7 +317,27 @@ impl Api {
             .get(&api_key.0)
             .ok_or(StatusCode::UNAUTHORIZED)?;
 
-        let response = self
+        match self.ome_statistics(stream).await {
+            Ok(statistics) => Ok(Html(html! {"../res/statistics.html",
+                "{connections}" => statistics.total_connections,
+                "{start_time}" => statistics.created_time,
+                "{total_in}" => statistics.total_bytes_in / 1_000_000,
+                "{total_out}" => statistics.total_bytes_out / 1_000_000
+            })),
+            Err(_) => {
+                let not_running = r#"<span class="error">Not running!</span>"#;
+                Ok(Html(html! {"../res/statistics.html",
+                    "{connections}" => not_running,
+                    "{start_time}" => not_running,
+                    "{total_in}" => not_running,
+                    "{total_out}" => not_running
+                }))
+            }
+        }
+    }
+
+    async fn ome_statistics(&self, stream: &str) -> Result<OmeStatisticsResponse> {
+        Ok(self
             .client
             .get(format!(
                 "{}/v1/stats/current/vhosts/default/apps/app/streams/{}",
@@ -325,30 +346,20 @@ impl Api {
             .send()
             .await
             .map_err(|why| {
-                tracing::error!("Error sending API request to OME: {}", why);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-
-        if response.status() == StatusCode::OK {
-            let statistics = response.json::<OmeStatistics>().await.map_err(|why| {
-                tracing::error!("Error decoding JSON received from OME: {}", why);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-            Ok(Html(html! {"../res/statistics.html",
-                "{connections}" => statistics.response.total_connections,
-                "{start_time}" => statistics.response.created_time,
-                "{total_in}" => statistics.response.total_bytes_in / 1_000_000,
-                "{total_out}" => statistics.response.total_bytes_out / 1_000_000
-            }))
-        } else {
-            let not_running = r#"<span class="error">Not running!</span>"#;
-            Ok(Html(html! {"../res/statistics.html",
-                "{connections}" => not_running,
-                "{start_time}" => not_running,
-                "{total_in}" => not_running,
-                "{total_out}" => not_running
-            }))
-        }
+                Error::from_string(
+                    format!("Error fetching statistics from OME: {}", why),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            })?
+            .json::<OmeStatistics>()
+            .await
+            .map_err(|why| {
+                Error::from_string(
+                    format!("Error decoding OME statistics: {}", why),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                )
+            })?
+            .response)
     }
 
     #[oai(path = "/login", method = "get")]
@@ -377,10 +388,23 @@ impl Api {
         }
     }
 
-    #[oai(path = "/player/:stream", method = "get")]
-    async fn player(&self, stream: Path<String>) -> Html<String> {
+    #[oai(path = "/streams", method = "get")]
+    async fn streams(&self) -> Html<String> {
+        let buttons = futures::stream::iter(self.config.api_keys.values())
+            .filter_map(|stream| async {
+                self.ome_statistics(stream)
+                    .await
+                    .ok()
+                    .map(|_| html! {"../res/available-stream.html", "{stream}" => stream})
+            })
+            .collect::<String>()
+            .await;
+        Html(buttons)
+    }
+
+    #[oai(path = "/player", method = "get")]
+    async fn player(&self) -> Html<String> {
         Html(html! {"../res/player.html",
-            "{stream}" => stream,
             "{host}" => self.config.ome_host
         })
     }
