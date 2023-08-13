@@ -350,7 +350,7 @@ impl Api {
         }
     }
 
-    #[oai(path = "/dashboard/login", method = "get")]
+    #[oai(path = "/login", method = "get")]
     async fn login(&self) -> Html<String> {
         Html(html! { "../res/login.html" })
     }
