@@ -110,7 +110,24 @@ impl Handler<Handle> for Manager {
             .get_mut(&msg.uuid)
         {
             queued_player.allow = msg.allow;
-            queued_player.addr.do_send(player::Handle(msg.allow));
+            if queued_player
+                .addr
+                .try_send(player::Handle(msg.allow))
+                .is_err()
+            {
+                tracing::warn!(
+                    "Actor for {} not receiving messages! Removing queue entry",
+                    msg.uuid
+                );
+
+                self.streams
+                    .get_mut(&msg.stream)
+                    .unwrap()
+                    .queue
+                    .remove(&msg.uuid);
+
+                self.refresh_sockets(None, &msg.stream);
+            }
         }
     }
 }

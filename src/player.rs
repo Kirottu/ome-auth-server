@@ -62,6 +62,13 @@ impl Actor for QueueWebSocket {
             stream: self.stream.clone(),
         })
     }
+
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        self.manager.do_send(manager::Dequeue {
+            uuid: self.uuid,
+            stream: self.stream.clone(),
+        });
+    }
 }
 
 impl Handler<Handle> for QueueWebSocket {
@@ -76,10 +83,6 @@ impl Handler<Handle> for QueueWebSocket {
             });
         } else {
             ctx.text(html! {"../res/player/rejected.html"});
-            self.manager.do_send(manager::Dequeue {
-                uuid: self.uuid,
-                stream: self.stream.clone(),
-            });
             ctx.close(None);
         }
     }
@@ -102,10 +105,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for QueueWebSocket {
             }
             Ok(ws::Message::Pong(_)) => self.hb = Instant::now(),
             _ => {
-                self.manager.do_send(manager::Dequeue {
-                    uuid: self.uuid,
-                    stream: self.stream.clone(),
-                });
                 ctx.stop();
             }
         }
