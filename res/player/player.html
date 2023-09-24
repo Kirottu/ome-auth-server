@@ -1,0 +1,22 @@
+<div id="main" hx-swap-oob="true">
+  <div id="player_wrapper">
+    <!-- OvenPlayer will be initialized inside this element. -->
+    <div id="player_id"></div>
+
+  </div>
+
+  <script>
+    OvenPlayer.create('player_id', {
+      sources: [
+        {
+          label: 'label_for_webrtc',
+          // Set the type to 'webrtc'
+          type: 'webrtc',
+          // Set the file to WebRTC Signaling URL with OvenMediaEngine 
+          file: 'wss://{host}:3334/app/{stream}/{uuid}',
+        }
+      ],
+      timeout: 600000,
+    });
+  </script>
+</div>

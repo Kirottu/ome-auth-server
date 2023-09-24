@@ -1,0 +1,10 @@
+<tr {class}>
+  <td><code>{address}</code></td>
+  <td><code>{uuid}</code></td>
+
+  <td>
+    <button id="accept-btn" class="btn" hx-vals='{allow}' hx-swap="none" ws-send>Accept</button>
+    <button id="reject-btn" class="btn" hx-vals='{reject}' hx-swap="none" ws-send>Reject</button>
+    {notification}
+  </td>
+</tr>

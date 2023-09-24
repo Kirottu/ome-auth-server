@@ -17,3 +17,4 @@ serde_urlencoded = "0.7.1"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.17"
 ureq = { version = "2.7.1", default-features = false, features = ["json"] }
+uuid = { version = "1.4.1", features = ["v4", "serde"] }

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kirottu's streaming den</title>
+  <link rel="icon" href="/harold.png">
+
+  <style>
+    #buttons {
+      display: flex;
+      column-gap: 10px;
+      padding-bottom: 20px;
+    }
+  </style>
+
+  <script src="https://unpkg.com/htmx.org@1.9.5"></script>
+  <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
+  <!-- Load OvenPlayer via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
+</head>
+
+<body>
+
+  <h1>Kirottu's streaming den</h1>
+  <p>
+    Select a stream to watch.<br>
+    <b>NOTE: You will need to be accepted to watch, so wait patiently and notify the streamer.</b>
+  </p>
+
+  <h4>Available streams</h4>
+
+  {buttons}
+
+</body>
+
+</html>
