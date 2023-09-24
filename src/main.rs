@@ -1,20 +1,31 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     fs,
     time::{Duration, Instant},
 };
 
-use futures::StreamExt;
-use poem::{http::StatusCode, listener::TcpListener, EndpointExt, Error, Result, Route, Server};
-use poem_openapi::{
-    param::Query,
-    payload::{Form, Html, Json},
-    ApiResponse, Object, OpenApi, OpenApiService,
+use actix::{
+    Actor, ActorContext, Addr, Arbiter, AsyncContext, Context, Message, Recipient, StreamHandler,
+    System, WrapFuture,
 };
+use actix_web::{
+    body::BoxBody,
+    get, middleware, post,
+    web::{Data, Form, Json, Payload, Query},
+    App, HttpRequest, HttpResponse, HttpServer, Responder, ResponseError, Result,
+};
+use actix_web_actors::ws;
+use futures::StreamExt;
+use queue::QueueActor;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, RwLock};
 
-#[derive(Deserialize)]
+use crate::queue::QueueWebSocket;
+
+mod queue;
+
+#[derive(Deserialize, Clone)]
 struct Config {
     /// The API keys mapped to stream keys
     api_keys: HashMap<String, String>,
@@ -39,14 +50,14 @@ struct OmeStatisticsResponse {
     total_bytes_out: u64,
 }
 
-#[derive(Object, Deserialize, Serialize, Clone, Hash, Eq, PartialEq)]
+#[derive(Deserialize, Serialize, Clone, Hash, Eq, PartialEq)]
 struct Client {
     address: String,
     port: u16,
     user_agent: Option<String>,
 }
 
-#[derive(Object, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 struct Request {
     direction: String,
     protocol: String,
@@ -57,16 +68,10 @@ struct Request {
 }
 
 /// The admission request object that OME sends
-#[derive(Object, Deserialize, Clone)]
+#[derive(Deserialize, Clone)]
 struct AdmissionRequest {
     client: Client,
     request: Request,
-}
-
-#[derive(Object, Deserialize)]
-struct QueueHandleRequest {
-    client: Client,
-    allow: bool,
 }
 
 #[derive(Clone)]
@@ -75,18 +80,12 @@ struct QueuedRequest {
     sender: mpsc::UnboundedSender<bool>,
 }
 
-struct Api {
+struct State {
     config: Config,
-    streams: HashMap<String, RwLock<StreamData>>,
-    client: reqwest::Client,
+    agent: ureq::Agent,
 }
 
-#[derive(Default)]
-struct StreamData {
-    queue: HashMap<Client, QueuedRequest>,
-}
-
-#[derive(Object, Serialize)]
+#[derive(Serialize)]
 struct Response {
     allowed: bool,
     new_url: Option<String>,
@@ -94,22 +93,68 @@ struct Response {
     reason: Option<String>,
 }
 
-/// OME in the closing state only needs an empty JSON block
-#[derive(Object, Serialize)]
-struct Empty;
-
-#[derive(ApiResponse)]
 enum AuthResponse {
-    #[oai(status = 200)]
-    Opening(Json<Response>),
-    #[oai(status = 200)]
-    Closing(Json<Empty>),
+    Opening(Response),
+    Closing,
 }
 
-#[derive(Object, Deserialize)]
-struct LoginForm {
+impl Responder for AuthResponse {
+    type Body = BoxBody;
+
+    fn respond_to(self, _req: &actix_web::HttpRequest) -> HttpResponse<Self::Body> {
+        match self {
+            AuthResponse::Opening(response) => {
+                HttpResponse::Ok().body(serde_json::to_string(&response).unwrap())
+            }
+            AuthResponse::Closing => HttpResponse::Ok().body("{}"),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ApiKeyQuery {
     api_key: String,
 }
+
+#[derive(Deserialize)]
+struct QueueHandleQuery {
+    allow: bool,
+}
+
+struct Html(String);
+
+impl Responder for Html {
+    type Body = BoxBody;
+
+    fn respond_to(self, _req: &actix_web::HttpRequest) -> actix_web::HttpResponse<Self::Body> {
+        HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(self.0)
+    }
+}
+
+#[derive(Debug)]
+enum Error {
+    Unauthorized,
+    BadRequest,
+    InternalError,
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Error::Unauthorized => "Unauthorized",
+                Error::BadRequest => "Bad request",
+                Error::InternalError => "Internal server error",
+            }
+        )
+    }
+}
+
+impl ResponseError for Error {}
 
 /// Macro to easily fill up templates
 macro_rules! html {
@@ -129,285 +174,337 @@ macro_rules! html {
     };
 }
 
-#[OpenApi]
-impl Api {
-    #[oai(path = "/api/auth", method = "post")]
-    async fn auth(&self, request: Json<AdmissionRequest>) -> Result<AuthResponse> {
-        match request.request.status.as_str() {
-            "opening" => match request.request.direction.as_str() {
-                "incoming" => {
-                    let mut split = request.request.url.split('/').skip(3);
-                    let key = split.next().ok_or(StatusCode::BAD_REQUEST)?;
+struct StatisticsWebSocket {
+    hb: Instant,
+    state: Data<State>,
+    stream: String,
+}
 
-                    if let Some(stream) = self.config.api_keys.get(key) {
-                        tracing::info!(
-                            "Allowing incoming stream from {} to stream to ID: {}",
-                            request.client.address,
-                            stream
-                        );
+impl StatisticsWebSocket {
+    const INTERVAL: Duration = Duration::from_secs(1);
+    const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-                        let new_url = request.request.url.replace(key, &format!("app/{}", stream));
+    fn new(state: Data<State>, stream: String) -> Self {
+        Self {
+            hb: Instant::now(),
+            state,
+            stream,
+        }
+    }
 
-                        Ok(AuthResponse::Opening(Json(Response {
-                            allowed: true,
-                            new_url: Some(new_url),
-                            lifetime: None,
-                            reason: None,
-                        })))
-                    } else {
-                        tracing::info!("Denying incoming stream from {}", request.client.address);
+    fn hb(&self, ctx: &mut <Self as Actor>::Context) {
+        ctx.run_interval(Self::INTERVAL, |act, ctx| {
+            if Instant::now().duration_since(act.hb) > Self::CLIENT_TIMEOUT {
+                ctx.stop();
 
-                        Ok(AuthResponse::Opening(Json(Response {
-                            allowed: false,
-                            new_url: None,
-                            lifetime: None,
-                            reason: Some("Invalid API key".to_string()),
-                        })))
+                return;
+            }
+
+            let state = act.state.clone();
+            let stream = act.stream.clone();
+
+            let content = match ome_statistics(state, &stream) {
+                Ok(_statistics) => html! {"../res/statistics.html",
+                    "{connections}" => _statistics.total_connections,
+                    "{start_time}" => _statistics.created_time,
+                    "{total_in}" => _statistics.total_bytes_in / 1_000_000,
+                    "{total_out}" => _statistics.total_bytes_out / 1_000_000
+                },
+                Err(_) => {
+                    let not_running = r#"<span class="error">Not running!</span>"#;
+                    html! {"../res/statistics.html",
+                        "{connections}" => not_running,
+                        "{start_time}" => not_running,
+                        "{total_in}" => not_running,
+                        "{total_out}" => not_running
                     }
                 }
-                "outgoing" => {
-                    let (tx, mut rx) = mpsc::unbounded_channel();
+            };
 
-                    let stream = request.request.url.split('/').last().unwrap();
+            ctx.text(content);
+        });
+    }
+}
 
-                    self.streams
-                        .get(stream)
-                        .ok_or(Error::from_string(
-                            "Invalid stream ID",
-                            StatusCode::BAD_REQUEST,
-                        ))?
-                        .write()
-                        .await
-                        .queue
-                        .insert(
-                            request.client.clone(),
-                            QueuedRequest {
-                                instant: Instant::now(),
-                                sender: tx,
-                            },
-                        );
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for StatisticsWebSocket {
+    fn handle(&mut self, item: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        match item {
+            Ok(ws::Message::Ping(msg)) => {
+                self.hb = Instant::now();
+                ctx.pong(&msg);
+            }
+            Ok(ws::Message::Pong(_)) => self.hb = Instant::now(),
+            _ => ctx.stop(),
+        }
+    }
+}
 
+impl Actor for StatisticsWebSocket {
+    type Context = ws::WebsocketContext<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        self.hb(ctx);
+    }
+}
+
+#[post("/api/auth")]
+async fn auth(state: Data<State>, request: Json<AdmissionRequest>) -> Result<AuthResponse, Error> {
+    match request.request.status.as_str() {
+        "opening" => match request.request.direction.as_str() {
+            "incoming" => {
+                let mut split = request.request.url.split('/').skip(3);
+                let key = split.next().ok_or(Error::Unauthorized)?;
+
+                if let Some(stream) = state.config.api_keys.get(key) {
                     tracing::info!(
-                        "Admission request for {}:{} queued",
+                        "Allowing incoming stream from {} to stream to ID: {}",
                         request.client.address,
-                        request.client.port
+                        stream
                     );
 
-                    tokio::select! {
-                        allow = rx.recv() => match allow {
-                            Some(true) => {
-                                tracing::info!(
-                                    "{}:{} authorized for an outgoing stream",
-                                    request.client.address,
-                                    request.client.port
-                                );
-                                Ok(AuthResponse::Opening(Json(Response {
-                                    allowed: true,
-                                    new_url: None,
-                                    lifetime: None,
-                                    reason: None,
-                                })))
-                            }
-                            _ => {
-                                tracing::info!(
-                                    "{}:{} denied for an outgoing stream",
-                                    request.client.address,
-                                    request.client.port
-                                );
-                                Ok(AuthResponse::Opening(Json(Response {
-                                    allowed: false,
-                                    new_url: None,
-                                    lifetime: None,
-                                    reason: Some("Unauthorized".to_string()),
-                                })))
-                            }
-                        },
-                        _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                            self.streams[stream].write().await.queue.remove(&request.client);
-                            Ok(AuthResponse::Opening(Json(Response {
-                                allowed: false,
-                                new_url: None,
-                                lifetime: None,
-                                reason: Some("Unauthorized".to_string()),
-                            })))
-                        }
-                    }
+                    let new_url = request.request.url.replace(key, &format!("app/{}", stream));
+
+                    Ok(AuthResponse::Opening(Response {
+                        allowed: true,
+                        new_url: Some(new_url),
+                        lifetime: None,
+                        reason: None,
+                    }))
+                } else {
+                    tracing::info!("Denying incoming stream from {}", request.client.address);
+
+                    Ok(AuthResponse::Opening(Response {
+                        allowed: false,
+                        new_url: None,
+                        lifetime: None,
+                        reason: Some("Invalid API key".to_string()),
+                    }))
                 }
-                _ => Err(Error::from_string(
-                    "Invalid direction",
-                    StatusCode::BAD_REQUEST,
-                )),
-            },
-            "closing" => {
+            }
+            "outgoing" => {
+                let (tx, mut rx) = mpsc::unbounded_channel();
+
+                let stream = request.request.url.split('/').last().unwrap();
+
+                state
+                    .streams
+                    .get(stream)
+                    .ok_or(Error::BadRequest)?
+                    .write()
+                    .await
+                    .queue
+                    .insert(
+                        request.client.clone(),
+                        QueuedRequest {
+                            instant: Instant::now(),
+                            sender: tx,
+                        },
+                    );
+
                 tracing::info!(
-                    "{}:{} closed connection",
+                    "Admission request for {}:{} queued",
                     request.client.address,
                     request.client.port
                 );
 
-                Ok(AuthResponse::Closing(Json(Empty)))
-            }
-            _ => Err(Error::from_string(
-                "Invalid status",
-                StatusCode::BAD_REQUEST,
-            )),
-        }
-    }
-
-    #[oai(path = "/api/queue/accept", method = "post")]
-    async fn accept(&self, client: Form<Client>, api_key: Query<String>) -> Result<()> {
-        self.handle(&client.0, &api_key.0, true).await
-    }
-
-    #[oai(path = "/api/queue/reject", method = "post")]
-    async fn reject(&self, client: Form<Client>, api_key: Query<String>) -> Result<()> {
-        self.handle(&client.0, &api_key.0, false).await
-    }
-
-    async fn handle(&self, client: &Client, api_key: &String, allow: bool) -> Result<()> {
-        let stream = self
-            .config
-            .api_keys
-            .get(api_key)
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-
-        let mut stream_data = self.streams[stream].write().await;
-
-        match stream_data.queue.remove(client) {
-            Some(queued_request) => {
-                let _ = queued_request.sender.send(allow);
-                Ok(())
-            }
-            None => Err(Error::from_status(StatusCode::BAD_REQUEST)),
-        }
-    }
-
-    #[oai(path = "/queue", method = "get")]
-    async fn queue(&self, api_key: Query<String>) -> Result<Html<String>> {
-        let stream = self
-            .config
-            .api_keys
-            .get(&api_key.0)
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-
-        let content = self.streams[stream]
-            .read()
-            .await
-            .queue
-            .iter()
-            .map(|(client, request)| {
-                html! {"../res/queued_connection.html",
-                    "{ip}" => client.address,
-                    "{port}" => client.port,
-                    "{elapsed}" => request.instant.elapsed().as_secs(),
-                    "{api_key}" => api_key,
-                    "{client}" => serde_json::to_string(client).unwrap()
+                tokio::select! {
+                    allow = rx.recv() => match allow {
+                        Some(true) => {
+                            tracing::info!(
+                                "{}:{} authorized for an outgoing stream",
+                                request.client.address,
+                                request.client.port
+                            );
+                            Ok(AuthResponse::Opening(Response {
+                                allowed: true,
+                                new_url: None,
+                                lifetime: None,
+                                reason: None,
+                            }))
+                        }
+                        _ => {
+                            tracing::info!(
+                                "{}:{} denied for an outgoing stream",
+                                request.client.address,
+                                request.client.port
+                            );
+                            Ok(AuthResponse::Opening(Response {
+                                allowed: false,
+                                new_url: None,
+                                lifetime: None,
+                                reason: Some("Unauthorized".to_string()),
+                            }))
+                        }
+                    },
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                        state.streams[stream].write().await.queue.remove(&request.client);
+                        Ok(AuthResponse::Opening(Response {
+                            allowed: false,
+                            new_url: None,
+                            lifetime: None,
+                            reason: Some("Unauthorized".to_string()),
+                        }))
+                    }
                 }
-            })
-            .collect::<String>();
-
-        Ok(Html(html! {"../res/queue.html", "{content}" => &content}))
-    }
-
-    #[oai(path = "/statistics", method = "get")]
-    async fn statistics(&self, api_key: Query<String>) -> Result<Html<String>> {
-        let stream = self
-            .config
-            .api_keys
-            .get(&api_key.0)
-            .ok_or(StatusCode::UNAUTHORIZED)?;
-
-        match self.ome_statistics(stream).await {
-            Ok(statistics) => Ok(Html(html! {"../res/statistics.html",
-                "{connections}" => statistics.total_connections,
-                "{start_time}" => statistics.created_time,
-                "{total_in}" => statistics.total_bytes_in / 1_000_000,
-                "{total_out}" => statistics.total_bytes_out / 1_000_000
-            })),
-            Err(_) => {
-                let not_running = r#"<span class="error">Not running!</span>"#;
-                Ok(Html(html! {"../res/statistics.html",
-                    "{connections}" => not_running,
-                    "{start_time}" => not_running,
-                    "{total_in}" => not_running,
-                    "{total_out}" => not_running
-                }))
             }
+            _ => Err(Error::BadRequest),
+        },
+        "closing" => {
+            tracing::info!(
+                "{}:{} closed connection",
+                request.client.address,
+                request.client.port
+            );
+
+            Ok(AuthResponse::Closing)
         }
+        _ => Err(Error::BadRequest),
     }
+}
 
-    async fn ome_statistics(&self, stream: &str) -> Result<OmeStatisticsResponse> {
-        Ok(self
-            .client
-            .get(format!(
-                "{}/v1/stats/current/vhosts/default/apps/app/streams/{}",
-                self.config.ome_api_host, stream
-            ))
-            .send()
-            .await
-            .map_err(|why| {
-                Error::from_string(
-                    format!("Error fetching statistics from OME: {}", why),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            })?
-            .json::<OmeStatistics>()
-            .await
-            .map_err(|why| {
-                Error::from_string(
-                    format!("Error decoding OME statistics: {}", why),
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            })?
-            .response)
+#[post("/api/queue/handle")]
+async fn handle(
+    state: Data<State>,
+    api_key: Query<ApiKeyQuery>,
+    allow: Query<QueueHandleQuery>,
+    client: Form<Client>,
+) -> Result<Json<()>, Error> {
+    let stream = state
+        .config
+        .api_keys
+        .get(&api_key.api_key)
+        .ok_or(Error::Unauthorized)?;
+
+    let mut stream_data = state.streams[stream].write().await;
+
+    match stream_data.queue.remove(&client) {
+        Some(queued_request) => {
+            let _ = queued_request.sender.send(allow.allow);
+            Ok(Json(()))
+        }
+        None => Err(Error::BadRequest),
     }
+}
 
-    #[oai(path = "/login", method = "get")]
-    async fn login(&self) -> Html<String> {
-        Html(html! { "../res/login.html" })
-    }
+#[get("/queue")]
+async fn queue_html(
+    req: HttpRequest,
+    payload: Payload,
+    state: Data<State>,
+    addr: Data<Addr<QueueActor>>,
+    query: Query<ApiKeyQuery>,
+) -> Result<HttpResponse> {
+    let stream = state
+        .config
+        .api_keys
+        .get(&query.api_key)
+        .ok_or(Error::Unauthorized)?
+        .clone();
 
-    #[oai(path = "/dashboard", method = "get")]
-    async fn dashboard(&self, api_key: Query<Option<String>>) -> Result<Html<String>> {
-        match api_key.0 {
-            Some(key) => {
-                let stream = self
-                    .config
-                    .api_keys
-                    .get(&key)
-                    .ok_or(StatusCode::UNAUTHORIZED)?;
+    ws::start(
+        QueueWebSocket::new(addr.get_ref().clone(), stream),
+        &req,
+        payload,
+    )
 
-                Ok(Html(html! {"../res/dashboard.html",
-                    "{stream}" => stream,
-                    "{api_key}" => key
-                }))
+    /*let content = state.streams[stream]
+        .read()
+        .await
+        .queue
+        .iter()
+        .map(|(client, request)| {
+            html! {"../res/queued_connection.html",
+                "{ip}" => client.address,
+                "{port}" => client.port,
+                "{elapsed}" => request.instant.elapsed().as_secs(),
+                "{api_key}" => query.api_key,
+                "{client}" => serde_json::to_string(client).unwrap()
             }
-            None => Ok(Html(
-                html! {"../res/login-redirect.html", "{host}" => self.config.host},
-            )),
-        }
-    }
-
-    #[oai(path = "/streams", method = "get")]
-    async fn streams(&self) -> Html<String> {
-        let buttons = futures::stream::iter(self.config.api_keys.values())
-            .filter_map(|stream| async {
-                self.ome_statistics(stream)
-                    .await
-                    .ok()
-                    .map(|_| html! {"../res/available-stream.html", "{stream}" => stream})
-            })
-            .collect::<String>()
-            .await;
-        Html(buttons)
-    }
-
-    #[oai(path = "/player", method = "get")]
-    async fn player(&self) -> Html<String> {
-        Html(html! {"../res/player.html",
-            "{host}" => self.config.ome_host
         })
+        .collect::<String>();
+
+    Ok(Html(html! {"../res/queue.html", "{content}" => &content}))*/
+}
+
+#[get("/statistics")]
+async fn statistics(
+    req: HttpRequest,
+    payload: Payload,
+    state: Data<State>,
+    query: Query<ApiKeyQuery>,
+) -> Result<HttpResponse> {
+    let stream = state
+        .config
+        .api_keys
+        .get(&query.api_key)
+        .ok_or(Error::Unauthorized)?;
+
+    ws::start(
+        StatisticsWebSocket::new(state.clone(), stream.clone()),
+        &req,
+        payload,
+    )
+}
+
+fn ome_statistics(state: Data<State>, stream: &str) -> Result<OmeStatisticsResponse, Error> {
+    Ok(state
+        .agent
+        .get(&format!(
+            "{}/v1/stats/current/vhosts/default/apps/app/streams/{}",
+            state.config.ome_api_host, stream
+        ))
+        .set("Authorization", &state.config.ome_api_credentials)
+        .call()
+        .map_err(|why| Error::InternalError)?
+        .into_json::<OmeStatistics>()
+        .map_err(|why| Error::InternalError)?
+        .response)
+}
+
+#[get("/login")]
+async fn login() -> Html {
+    Html(html! { "../res/login.html" })
+}
+
+#[get("/dashboard")]
+async fn dashboard(state: Data<State>, query: Option<Query<ApiKeyQuery>>) -> Result<Html> {
+    match query {
+        Some(query) => {
+            let stream = state
+                .config
+                .api_keys
+                .get(&query.api_key)
+                .ok_or(Error::Unauthorized)?;
+
+            Ok(Html(html! {"../res/dashboard.html",
+                "{stream}" => stream,
+                "{api_key}" => query.api_key
+            }))
+        }
+        None => Ok(Html(
+            html! {"../res/login-redirect.html", "{host}" => state.config.host},
+        )),
     }
+}
+
+#[get("/streams")]
+async fn streams(state: Data<State>) -> Html {
+    let buttons = futures::stream::iter(state.config.api_keys.values())
+        .filter_map(|stream| async {
+            ome_statistics(state.clone(), stream)
+                .ok()
+                .map(|_| html! {"../res/available-stream.html", "{stream}" => stream})
+        })
+        .collect::<String>()
+        .await;
+    Html(buttons)
+}
+
+#[get("/player")]
+async fn player(state: Data<State>) -> Html {
+    Html(html! {"../res/player.html",
+        "{host}" => state.config.ome_host
+    })
 }
 
 #[tokio::main]
@@ -417,39 +514,30 @@ async fn main() {
     let config: Config = ron::de::from_bytes(&fs::read("config.ron").unwrap()).unwrap();
     let bind = config.bind.clone();
 
-    let mut streams = HashMap::new();
+    let state = Data::new(State {
+        config,
+        agent: ureq::Agent::new(),
+    });
 
-    for stream in config.api_keys.values() {
-        streams.insert(stream.clone(), RwLock::new(StreamData::default()));
-    }
+    let queue_actor =
+        QueueActor::new(&config.api_keys.clone().into_values().collect::<Vec<_>>()).start();
 
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        "Authorization",
-        reqwest::header::HeaderValue::from_str(&config.ome_api_credentials).unwrap(),
-    );
-
-    let service = OpenApiService::new(
-        Api {
-            config,
-            streams,
-            client: reqwest::Client::builder()
-                .default_headers(headers)
-                .build()
-                .unwrap(),
-        },
-        "OME Auth Server",
-        "0.1.0",
-    );
-
-    let ui = service.swagger_ui();
-
-    let app = Route::new()
-        .nest("/", service)
-        .nest("/docs", ui)
-        .inspect_all_err(|why| {
-            tracing::error!("{}", why);
-        });
-
-    Server::new(TcpListener::bind(bind)).run(app).await.unwrap()
+    HttpServer::new(move || {
+        App::new()
+            .service(auth)
+            .service(handle)
+            .service(dashboard)
+            .service(login)
+            .service(streams)
+            .service(queue_html)
+            .service(player)
+            .service(statistics)
+            .app_data(queue_actor)
+            .app_data(state.clone())
+    })
+    .bind(bind)
+    .unwrap()
+    .run()
+    .await
+    .unwrap();
 }

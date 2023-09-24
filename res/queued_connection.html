@@ -4,9 +4,9 @@
   <td>{elapsed} seconds</td>
 
   <td>
-    <button id="accept-btn" class="btn" hx-post="/api/queue/accept?api_key={api_key}" hx-vals='{client}'
+    <button id="accept-btn" class="btn" hx-post="/api/queue/handle?api_key={api_key}&allow=true" hx-vals='{client}'
       hx-swap="none">Accept</button>
-    <button id="reject-btn" class="btn" hx-post="/api/queue/reject?api_key={api_key}" hx-vals='{client}'
+    <button id="reject-btn" class="btn" hx-post="/api/queue/handle?api_key={api_key}&allow=false" hx-vals='{client}'
       hx-swap="none">Reject</button>
   </td>
 </tr>

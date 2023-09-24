@@ -41,9 +41,14 @@
   </div>
 
   <script>
+    var player = null;
     // Initialize OvenPlayer
     function create_player(stream) {
-      const player = OvenPlayer.create('player_id', {
+      if (player != null) {
+        player.remove();
+      }
+
+      player = OvenPlayer.create('player_id', {
         sources: [
           {
             label: 'label_for_webrtc',
