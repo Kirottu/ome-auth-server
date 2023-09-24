@@ -7,8 +7,10 @@ use actix::{
     Actor, ActorContext, Addr, AsyncContext, Context, Handler, Message, Recipient, StreamHandler,
 };
 use actix_web_actors::ws;
+use futures::channel::mpsc::UnboundedSender;
+use serde::{Deserialize, Serialize};
 
-use crate::{Client, QueuedRequest};
+use crate::{html, Client};
 
 pub struct QueueWebSocket {
     hb: Instant,
@@ -18,10 +20,10 @@ pub struct QueueWebSocket {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct Refresh(Vec<(Client, QueuedRequest)>);
+pub struct Refresh(Vec<Client>);
 
-#[derive(Message)]
-#[rtype(result = "()")]
+#[derive(Message, Serialize, Deserialize)]
+#[rtype(result = "bool")]
 pub struct Handle {
     pub client: Client,
     pub allow: bool,
@@ -30,9 +32,16 @@ pub struct Handle {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct NewConnection {
+pub struct Enqueue {
     pub client: Client,
-    pub request: QueuedRequest,
+    pub sender: UnboundedSender<bool>,
+    pub stream: String,
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Dequeue {
+    pub client: Client,
     pub stream: String,
 }
 
@@ -52,7 +61,7 @@ pub struct RecipientDisconnected {
 
 #[derive(Default)]
 struct StreamData {
-    queue: HashMap<Client, QueuedRequest>,
+    queue: HashMap<Client, UnboundedSender<bool>>,
     queue_recipients: Vec<Recipient<Refresh>>,
 }
 
@@ -71,7 +80,7 @@ impl QueueWebSocket {
     fn hb(&self, ctx: &mut <Self as Actor>::Context) {
         ctx.run_interval(Self::INTERVAL, |act, ctx| {
             if Instant::now().duration_since(act.hb) > Self::CLIENT_TIMEOUT {
-                self.addr.do_send(RecipientDisconnected {
+                act.addr.do_send(RecipientDisconnected {
                     recipient: ctx.address().recipient(),
                     stream: act.stream.clone(),
                 });
@@ -80,6 +89,22 @@ impl QueueWebSocket {
                 ctx.ping(&[]);
             }
         });
+    }
+
+    fn refresh(&self, queue: &[Client], ctx: &mut ws::WebsocketContext<Self>) {
+        let content = queue
+            .iter()
+            .map(|client| {
+                html! {"../res/queued_connection.html",
+                    "{ip}" => client.address,
+                    "{port}" => client.port,
+                    "{allow}" => serde_json::to_string(&Handle {client: client.clone(), allow: true, stream: self.stream.clone()}).unwrap(),
+                    "{reject}" => serde_json::to_string(&Handle {client: client.clone(), allow: false, stream: self.stream.clone()}).unwrap()
+                }
+            })
+            .collect::<String>();
+
+        ctx.text(html! {"../res/queue.html", "{content}" => &content})
     }
 }
 
@@ -93,6 +118,7 @@ impl Actor for QueueWebSocket {
             stream: self.stream.clone(),
             recipient: ctx.address().recipient(),
         });
+        self.refresh(&[], ctx);
     }
 }
 
@@ -103,6 +129,10 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for QueueWebSocket {
                 self.hb = Instant::now();
                 ctx.pong(&msg);
             }
+            Ok(ws::Message::Text(text)) => {
+                self.addr
+                    .do_send(serde_json::from_str::<Handle>(&text).unwrap());
+            }
             Ok(ws::Message::Pong(_)) => self.hb = Instant::now(),
             _ => ctx.stop(),
         }
@@ -112,7 +142,9 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for QueueWebSocket {
 impl Handler<Refresh> for QueueWebSocket {
     type Result = <Refresh as Message>::Result;
 
-    fn handle(&mut self, msg: Refresh, ctx: &mut Self::Context) -> Self::Result {}
+    fn handle(&mut self, msg: Refresh, ctx: &mut Self::Context) -> Self::Result {
+        self.refresh(&msg.0, ctx);
+    }
 }
 
 pub struct QueueActor {
@@ -123,21 +155,18 @@ impl QueueActor {
     pub fn new(_streams: &[String]) -> Self {
         Self {
             streams: _streams
-                .into_iter()
-                .map(|stream| (*stream, StreamData::default()))
+                .iter()
+                .map(|stream| (stream.clone(), StreamData::default()))
                 .collect(),
         }
     }
 
     fn refresh_sockets(&self, stream: &str) {
-        let mut queue = self.streams[stream]
+        let queue = self.streams[stream]
             .queue
             .clone()
-            .into_iter()
-            .map(|val| val)
+            .into_keys()
             .collect::<Vec<_>>();
-
-        queue.sort_by(|a, b| a.1.instant.elapsed().cmp(&b.1.instant.elapsed()));
 
         for recipient in &self.streams[stream].queue_recipients {
             recipient.do_send(Refresh(queue.clone()));
@@ -152,27 +181,56 @@ impl Actor for QueueActor {
 impl Handler<Handle> for QueueActor {
     type Result = <Handle as Message>::Result;
 
-    fn handle(&mut self, msg: Handle, ctx: &mut Self::Context) -> Self::Result {
-        if let Some(request) = self.streams[&msg.stream].queue.remove(&msg.client) {
-            request.sender.send(msg.allow).unwrap();
+    fn handle(&mut self, msg: Handle, _ctx: &mut Self::Context) -> Self::Result {
+        if let Some(sender) = self
+            .streams
+            .get_mut(&msg.stream)
+            .unwrap()
+            .queue
+            .remove(&msg.client)
+        {
+            sender.unbounded_send(msg.allow).unwrap();
             self.refresh_sockets(&msg.stream);
+            true
+        } else {
+            false
         }
     }
 }
 
-impl Handler<NewConnection> for QueueActor {
-    type Result = <NewConnection as Message>::Result;
+impl Handler<Enqueue> for QueueActor {
+    type Result = <Enqueue as Message>::Result;
 
-    fn handle(&mut self, msg: NewConnection, ctx: &mut Self::Context) -> Self::Result {
-        todo!()
+    fn handle(&mut self, msg: Enqueue, _ctx: &mut Self::Context) -> Self::Result {
+        self.streams
+            .get_mut(&msg.stream)
+            .unwrap()
+            .queue
+            .insert(msg.client, msg.sender);
+        self.refresh_sockets(&msg.stream);
+    }
+}
+
+impl Handler<Dequeue> for QueueActor {
+    type Result = <Dequeue as Message>::Result;
+
+    fn handle(&mut self, msg: Dequeue, _ctx: &mut Self::Context) -> Self::Result {
+        self.streams
+            .get_mut(&msg.stream)
+            .unwrap()
+            .queue
+            .remove(&msg.client);
+        self.refresh_sockets(&msg.stream);
     }
 }
 
 impl Handler<NewRecipient> for QueueActor {
     type Result = <NewRecipient as Message>::Result;
 
-    fn handle(&mut self, msg: NewRecipient, ctx: &mut Self::Context) -> Self::Result {
-        self.streams[&msg.stream]
+    fn handle(&mut self, msg: NewRecipient, _ctx: &mut Self::Context) -> Self::Result {
+        self.streams
+            .get_mut(&msg.stream)
+            .unwrap()
             .queue_recipients
             .push(msg.recipient);
     }
@@ -181,8 +239,10 @@ impl Handler<NewRecipient> for QueueActor {
 impl Handler<RecipientDisconnected> for QueueActor {
     type Result = <RecipientDisconnected as Message>::Result;
 
-    fn handle(&mut self, msg: RecipientDisconnected, ctx: &mut Self::Context) -> Self::Result {
-        self.streams[&msg.stream]
+    fn handle(&mut self, msg: RecipientDisconnected, _ctx: &mut Self::Context) -> Self::Result {
+        self.streams
+            .get_mut(&msg.stream)
+            .unwrap()
             .queue_recipients
             .retain(|recipient| *recipient != msg.recipient);
     }

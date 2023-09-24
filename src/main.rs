@@ -5,21 +5,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use actix::{
-    Actor, ActorContext, Addr, Arbiter, AsyncContext, Context, Message, Recipient, StreamHandler,
-    System, WrapFuture,
-};
+use actix::{Actor, ActorContext, Addr, AsyncContext, StreamHandler};
 use actix_web::{
     body::BoxBody,
-    get, middleware, post,
+    get, post,
     web::{Data, Form, Json, Payload, Query},
     App, HttpRequest, HttpResponse, HttpServer, Responder, ResponseError, Result,
 };
 use actix_web_actors::ws;
-use futures::StreamExt;
+use futures::{channel::mpsc, FutureExt, StreamExt};
 use queue::QueueActor;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, RwLock};
 
 use crate::queue::QueueWebSocket;
 
@@ -51,14 +47,14 @@ struct OmeStatisticsResponse {
 }
 
 #[derive(Deserialize, Serialize, Clone, Hash, Eq, PartialEq)]
-struct Client {
+pub struct Client {
     address: String,
     port: u16,
     user_agent: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
-struct Request {
+pub struct Request {
     direction: String,
     protocol: String,
     status: String,
@@ -72,12 +68,6 @@ struct Request {
 struct AdmissionRequest {
     client: Client,
     request: Request,
-}
-
-#[derive(Clone)]
-struct QueuedRequest {
-    instant: Instant,
-    sender: mpsc::UnboundedSender<bool>,
 }
 
 struct State {
@@ -157,6 +147,7 @@ impl Display for Error {
 impl ResponseError for Error {}
 
 /// Macro to easily fill up templates
+#[macro_export]
 macro_rules! html {
     ( $html:literal ) => {
         include_str!($html).to_owned()
@@ -248,7 +239,11 @@ impl Actor for StatisticsWebSocket {
 }
 
 #[post("/api/auth")]
-async fn auth(state: Data<State>, request: Json<AdmissionRequest>) -> Result<AuthResponse, Error> {
+async fn auth(
+    state: Data<State>,
+    queue_actor: Data<Addr<QueueActor>>,
+    request: Json<AdmissionRequest>,
+) -> Result<AuthResponse, Error> {
     match request.request.status.as_str() {
         "opening" => match request.request.direction.as_str() {
             "incoming" => {
@@ -282,24 +277,15 @@ async fn auth(state: Data<State>, request: Json<AdmissionRequest>) -> Result<Aut
                 }
             }
             "outgoing" => {
-                let (tx, mut rx) = mpsc::unbounded_channel();
+                let (tx, mut rx) = mpsc::unbounded();
 
                 let stream = request.request.url.split('/').last().unwrap();
 
-                state
-                    .streams
-                    .get(stream)
-                    .ok_or(Error::BadRequest)?
-                    .write()
-                    .await
-                    .queue
-                    .insert(
-                        request.client.clone(),
-                        QueuedRequest {
-                            instant: Instant::now(),
-                            sender: tx,
-                        },
-                    );
+                queue_actor.do_send(queue::Enqueue {
+                    stream: stream.to_string(),
+                    client: request.client.clone(),
+                    sender: tx,
+                });
 
                 tracing::info!(
                     "Admission request for {}:{} queued",
@@ -307,8 +293,8 @@ async fn auth(state: Data<State>, request: Json<AdmissionRequest>) -> Result<Aut
                     request.client.port
                 );
 
-                tokio::select! {
-                    allow = rx.recv() => match allow {
+                futures::select! {
+                    allow = rx.next() => match allow {
                         Some(true) => {
                             tracing::info!(
                                 "{}:{} authorized for an outgoing stream",
@@ -336,8 +322,11 @@ async fn auth(state: Data<State>, request: Json<AdmissionRequest>) -> Result<Aut
                             }))
                         }
                     },
-                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
-                        state.streams[stream].write().await.queue.remove(&request.client);
+                    _ = actix_web::rt::time::sleep(Duration::from_secs(60)).fuse() => {
+                        queue_actor.do_send(queue::Dequeue {
+                            client: request.client.clone(),
+                            stream: stream.to_string(),
+                        });
                         Ok(AuthResponse::Opening(Response {
                             allowed: false,
                             new_url: None,
@@ -365,6 +354,7 @@ async fn auth(state: Data<State>, request: Json<AdmissionRequest>) -> Result<Aut
 #[post("/api/queue/handle")]
 async fn handle(
     state: Data<State>,
+    queue_actor: Data<Addr<QueueActor>>,
     api_key: Query<ApiKeyQuery>,
     allow: Query<QueueHandleQuery>,
     client: Form<Client>,
@@ -375,14 +365,18 @@ async fn handle(
         .get(&api_key.api_key)
         .ok_or(Error::Unauthorized)?;
 
-    let mut stream_data = state.streams[stream].write().await;
-
-    match stream_data.queue.remove(&client) {
-        Some(queued_request) => {
-            let _ = queued_request.sender.send(allow.allow);
-            Ok(Json(()))
-        }
-        None => Err(Error::BadRequest),
+    if queue_actor
+        .send(queue::Handle {
+            client: client.0,
+            allow: allow.allow,
+            stream: stream.clone(),
+        })
+        .await
+        .unwrap()
+    {
+        Ok(Json(()))
+    } else {
+        Err(Error::BadRequest)
     }
 }
 
@@ -406,24 +400,6 @@ async fn queue_html(
         &req,
         payload,
     )
-
-    /*let content = state.streams[stream]
-        .read()
-        .await
-        .queue
-        .iter()
-        .map(|(client, request)| {
-            html! {"../res/queued_connection.html",
-                "{ip}" => client.address,
-                "{port}" => client.port,
-                "{elapsed}" => request.instant.elapsed().as_secs(),
-                "{api_key}" => query.api_key,
-                "{client}" => serde_json::to_string(client).unwrap()
-            }
-        })
-        .collect::<String>();
-
-    Ok(Html(html! {"../res/queue.html", "{content}" => &content}))*/
 }
 
 #[get("/statistics")]
@@ -507,23 +483,32 @@ async fn player(state: Data<State>) -> Html {
     })
 }
 
-#[tokio::main]
+#[get("/notification")]
+async fn notification() -> HttpResponse {
+    HttpResponse::Ok()
+        .content_type("audio/wav")
+        .body(&include_bytes!("../res/Oi.wav")[..])
+}
+
+#[actix_web::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
     let config: Config = ron::de::from_bytes(&fs::read("config.ron").unwrap()).unwrap();
     let bind = config.bind.clone();
 
+    let queue_actor =
+        QueueActor::new(&config.api_keys.clone().into_values().collect::<Vec<_>>()).start();
+
     let state = Data::new(State {
         config,
         agent: ureq::Agent::new(),
     });
 
-    let queue_actor =
-        QueueActor::new(&config.api_keys.clone().into_values().collect::<Vec<_>>()).start();
-
     HttpServer::new(move || {
         App::new()
+            .app_data(Data::new(queue_actor.clone()))
+            .app_data(state.clone())
             .service(auth)
             .service(handle)
             .service(dashboard)
@@ -532,8 +517,7 @@ async fn main() {
             .service(queue_html)
             .service(player)
             .service(statistics)
-            .app_data(queue_actor)
-            .app_data(state.clone())
+            .service(notification)
     })
     .bind(bind)
     .unwrap()
