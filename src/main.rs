@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, fs, time::Duration};
+use std::{collections::HashMap, fmt::Display, fs};
 
 use actix::{Actor, Addr};
 use actix_web::{
@@ -7,7 +7,6 @@ use actix_web::{
     web::{Data, Json},
     App, HttpResponse, HttpServer, Responder, ResponseError, Result,
 };
-use futures::{channel::mpsc, FutureExt, StreamExt};
 use manager::Manager;
 use serde::{Deserialize, Serialize};
 
@@ -50,11 +49,8 @@ pub struct Client {
 #[derive(Deserialize, Clone)]
 pub struct Request {
     direction: String,
-    protocol: String,
     status: String,
     url: String,
-    new_url: Option<String>,
-    time: String,
 }
 
 /// The admission request object that OME sends
@@ -255,9 +251,9 @@ fn ome_statistics(state: Data<State>, stream: &str) -> Result<OmeStatisticsRespo
         ))
         .set("Authorization", &state.config.ome_api_credentials)
         .call()
-        .map_err(|why| Error::InternalError)?
+        .map_err(|_why| Error::InternalError)?
         .into_json::<OmeStatistics>()
-        .map_err(|why| Error::InternalError)?
+        .map_err(|_why| Error::InternalError)?
         .response)
 }
 

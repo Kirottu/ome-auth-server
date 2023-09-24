@@ -1,8 +1,3 @@
-/*#[get("/player/streams")]
-async fn streams(state: Data<State>) -> Html {
-    Html(buttons)
-}*/
-
 use crate::{html, manager, ome_statistics, Html, State};
 use actix::{Actor, ActorContext, Addr, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{
@@ -13,7 +8,7 @@ use actix_web::{
 use actix_web_actors::ws;
 use futures::StreamExt;
 use serde::Deserialize;
-use std::{rc::Rc, time::Instant};
+use std::time::Instant;
 use uuid::Uuid;
 
 pub struct QueueWebSocket {

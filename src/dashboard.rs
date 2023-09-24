@@ -65,7 +65,7 @@ impl QueueWebSocket {
         let content = _queue
             .iter()
             .map(|(uuid, queued_player)| {
-        let (class, _notification) = if let Some(_uuid) = new {
+                let (class, _notification) = if let Some(_uuid) = new {
                     if *uuid == _uuid {
                         (r#"class="notify""#, r#"<audio src="/dashboard/notification" autoplay="true">"#)
                     } else {

@@ -4,7 +4,7 @@ use actix::{Actor, Addr, Context, Handler, Message, Recipient};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{dashboard, player, Client};
+use crate::{dashboard, player};
 
 #[derive(Message, Serialize, Deserialize)]
 #[rtype(result = "()")]
