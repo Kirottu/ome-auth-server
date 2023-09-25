@@ -67,7 +67,7 @@ impl QueueWebSocket {
             .map(|(uuid, queued_player)| {
                 let (class, _notification) = if let Some(_uuid) = new {
                     if *uuid == _uuid {
-                        (r#"class="notify""#, r#"<audio src="/dashboard/notification" autoplay="true">"#)
+                        (r#"class="notify""#, r#"<audio src="/static/notification" autoplay="true">"#)
                     } else {
                         ("", "")
                     }
@@ -80,7 +80,7 @@ impl QueueWebSocket {
                     "{class}" => class,
                     "{notification}" => _notification, 
                     "{allow}" => serde_json::to_string(&manager::Handle {uuid: *uuid, allow: true, stream: self.stream.clone()}).unwrap(),
-                    "{reject}" => serde_json::to_string(&manager::Handle {uuid: *uuid, allow: false, stream: self.stream.clone()}).unwrap()
+                    "{deny}" => serde_json::to_string(&manager::Handle {uuid: *uuid, allow: false, stream: self.stream.clone()}).unwrap()
                 }
             })
             .collect::<String>();
@@ -247,35 +247,21 @@ pub async fn statistics(
     )
 }
 
-#[get("/dashboard/login")]
-async fn login() -> Html {
-    Html(html! { "../res/dashboard/login.html" })
-}
+#[get("/dashboard/dashboard")]
+async fn dashboard(state: Data<State>, query: Query<ApiKeyQuery>) -> Result<Html> {
+    let stream = state
+        .config
+        .api_keys
+        .get(&query.api_key)
+        .ok_or(Error::Unauthorized)?;
 
-#[get("/dashboard/notification")]
-async fn notification() -> HttpResponse {
-    HttpResponse::Ok()
-        .content_type("audio/wav")
-        .body(&include_bytes!("../res/Oi.wav")[..])
+    Ok(Html(html! {"../res/dashboard/dashboard.html",
+        "{stream}" => stream,
+        "{api_key}" => query.api_key
+    }))
 }
 
 #[get("/dashboard")]
-async fn dashboard(state: Data<State>, query: Option<Query<ApiKeyQuery>>) -> Result<Html> {
-    match query {
-        Some(query) => {
-            let stream = state
-                .config
-                .api_keys
-                .get(&query.api_key)
-                .ok_or(Error::Unauthorized)?;
-
-            Ok(Html(html! {"../res/dashboard/dashboard.html",
-                "{stream}" => stream,
-                "{api_key}" => query.api_key
-            }))
-        }
-        None => Ok(Html(
-            html! {"../res/dashboard/login-redirect.html", "{host}" => state.config.host},
-        )),
-    }
+async fn index() -> Html {
+    Html(html! { "../res/dashboard/index.html" })
 }

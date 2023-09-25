@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>OME Auth Dashboard</title>
+  <style>
+    #main-div {
+      display: flex;
+      flex-direction: row;
+      justify-content: center;
+    }
+
+    th {
+      text-align: start;
+      width: 200px;
+    }
+
+    td {
+      text-align: start;
+      width: 200px;
+    }
+
+    .error {
+      color: red;
+    }
+
+    .notify {
+      animation: notify linear 1s;
+    }
+
+    @keyframes notify {
+      from {
+        background-color: orangered;
+      }
+
+      to {
+        background-color: transparent;
+      }
+    }
+
+    body {
+      background-color: black;
+      color: #dddddd;
+    }
+
+    #allow,
+    #login {
+      background-color: darkgreen;
+    }
+
+    #allow:hover,
+    #login:hover {
+      background-color: green;
+    }
+
+    #deny {
+      background-color: darkred;
+    }
+
+    #deny:hover {
+      background-color: #bb0000;
+    }
+
+    .btn {
+      color: white;
+      border: none;
+      padding: 10px;
+      border-radius: 5px;
+    }
+
+    .centered {
+      width: 97vw;
+      height: 98vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+
+    .larger {
+      font-size: large;
+    }
+
+    form {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+
+    input[type=password] {
+      padding: 5px;
+      margin-bottom: 5px;
+      background-color: black;
+      border: 2px solid darkgreen;
+      border-radius: 5px;
+      color: white;
+    }
+
+    input[type=password]:focus {
+      border: 2px solid green;
+      outline: 2px solid darkgreen;
+    }
+  </style>
+
+  <script src="https://unpkg.com/htmx.org@1.9.5"></script>
+  <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
+</head>
+
+<body>
+  <div class="centered">
+    <h1><code>The Control Room</code></h1>
+    <code class="larger">API Key</code>
+    <form hx-get="/dashboard/dashboard" hx-headers='{"Content-Type": "application/x-www-form-urlencoded"}'
+      hx-target="body">
+      <input type="password" name="api_key" autocomplete="current-password"><br>
+      <button id="login" class="btn"><code class="larger">Login</code></button>
+    </form>
+  </div>
+</body>

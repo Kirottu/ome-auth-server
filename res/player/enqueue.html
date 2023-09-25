@@ -1,7 +1,9 @@
-<body>
-  <div hx-ext="ws" ws-connect="/player/queue_ws?stream={stream}">
-    <div id="main">
-      Please wait until you are allowed to watch the stream...
-    </div>
+<div hx-ext="ws" ws-connect="/player/queue_ws?stream={stream}">
+  <div id="main" class="centered">
+    <img src="/static/haroldium" class="harold">
+
+    <p>
+      <code>Please wait until you are allowed to watch the stream...</code>
+    </p>
   </div>
-</body>
+</div>

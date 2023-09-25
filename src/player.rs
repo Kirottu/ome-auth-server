@@ -8,7 +8,7 @@ use actix_web::{
 use actix_web_actors::ws;
 use futures::StreamExt;
 use serde::Deserialize;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 pub struct QueueWebSocket {
@@ -34,6 +34,9 @@ struct StreamQuery {
 }
 
 impl QueueWebSocket {
+    const INTERVAL: Duration = Duration::from_secs(1);
+    const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+
     fn new(
         manager: Addr<manager::Manager>,
         ome_host: String,
@@ -49,18 +52,29 @@ impl QueueWebSocket {
             stream,
         }
     }
+
+    fn hb(&self, ctx: &mut <Self as Actor>::Context) {
+        ctx.run_interval(Self::INTERVAL, |act, ctx| {
+            if Instant::now().duration_since(act.hb) > Self::CLIENT_TIMEOUT {
+                ctx.stop();
+            } else {
+                ctx.ping(&[]);
+            }
+        });
+    }
 }
 
 impl Actor for QueueWebSocket {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        self.hb(ctx);
         self.manager.do_send(manager::Enqueue {
             uuid: self.uuid,
             ip_addr: self.ip_addr.clone(),
             addr: ctx.address(),
             stream: self.stream.clone(),
-        })
+        });
     }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
@@ -82,7 +96,7 @@ impl Handler<Handle> for QueueWebSocket {
                 "{stream}" => self.stream
             });
         } else {
-            ctx.text(html! {"../res/player/rejected.html"});
+            ctx.text(html! {"../res/player/denied.html"});
             ctx.close(None);
         }
     }
@@ -112,16 +126,16 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for QueueWebSocket {
 }
 
 #[get("/player")]
-async fn player(state: Data<State>) -> Html {
+async fn index(state: Data<State>) -> Html {
     let buttons = futures::stream::iter(state.config.api_keys.values())
         .filter_map(|stream| async {
             ome_statistics(state.clone(), stream)
                 .ok()
-                .map(|_| html! {"../res/player/available-stream.html", "{stream}" => stream})
+                .map(|_| html! {"../res/player/available_stream.html", "{stream}" => stream})
         })
         .collect::<String>()
         .await;
-    Html(html! {"../res/player/selector.html",
+    Html(html! {"../res/player/index.html",
         "{buttons}" => buttons
     })
 }
@@ -141,13 +155,21 @@ async fn queue_ws(
     payload: Payload,
     query: Query<StreamQuery>,
 ) -> Result<HttpResponse> {
+    let addr = req
+        .headers()
+        .get("X-Real-IP")
+        .map(|value| value.to_str().unwrap().to_string())
+        .unwrap_or(
+            req.peer_addr()
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or("N/A".to_string()),
+        );
+
     ws::start(
         QueueWebSocket::new(
             manager.get_ref().clone(),
             state.config.ome_host.clone(),
-            req.peer_addr()
-                .map(|addr| addr.ip().to_string())
-                .unwrap_or("N/A".to_string()),
+            addr,
             query.stream.clone(),
         ),
         &req,

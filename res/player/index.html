@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kirottu's streaming den</title>
+  <link rel="icon" href="/harold.png">
+
+  <style>
+    #buttons {
+      display: flex;
+      column-gap: 10px;
+      padding-bottom: 20px;
+    }
+
+    #player_wrapper {
+      height: 97vh;
+    }
+
+    body {
+      background: black;
+      color: white;
+    }
+
+    .centered {
+      width: 97vw;
+      height: 98vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+
+    .stream_button {
+      background-color: darkgreen;
+      color: white;
+      border: 1px green;
+      padding: 10px;
+      border-radius: 5px;
+    }
+
+    .stream_button:hover {
+      background-color: green;
+    }
+
+    .harold {
+      margin-bottom: 20px;
+    }
+
+    p {
+      font-size: large;
+    }
+  </style>
+
+  <script src="https://unpkg.com/htmx.org@1.9.5"></script>
+  <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
+  <!-- Load OvenPlayer via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/ovenplayer/dist/ovenplayer.js"></script>
+</head>
+
+<body>
+  <div id="center" class="centered">
+    <h1><code>Kirottu's streaming den</code></h1>
+    <p>
+      <code>Select a stream to watch.</code>
+    </p>
+
+    {buttons}
+  </div>
+</body>
+
+</html>

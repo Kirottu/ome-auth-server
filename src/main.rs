@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 mod dashboard;
 mod manager;
 mod player;
+mod static_files;
 
 #[derive(Deserialize)]
 struct OmeStatistics {
@@ -33,7 +34,6 @@ struct Config {
     /// The API keys mapped to stream keys
     api_keys: HashMap<String, String>,
     bind: String,
-    host: String,
     ome_host: String,
     ome_api_host: String,
     ome_api_credentials: String,
@@ -277,14 +277,16 @@ async fn main() {
             .app_data(Data::new(queue_actor.clone()))
             .app_data(state.clone())
             .service(auth)
+            .service(dashboard::index)
             .service(dashboard::dashboard)
-            .service(dashboard::login)
             .service(dashboard::queue)
             .service(dashboard::statistics)
-            .service(dashboard::notification)
-            .service(player::player)
+            .service(player::index)
             .service(player::enqueue)
             .service(player::queue_ws)
+            .service(static_files::notification)
+            .service(static_files::haroldium)
+            .service(static_files::killmeplz)
     })
     .bind(bind)
     .unwrap()
