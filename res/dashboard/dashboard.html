@@ -1,29 +1,31 @@
-<h1>Stream ID: <code>{stream}</code></h1>
+<div id="main">
+  <h1>Stream ID: <code>{stream}</code></h1>
 
-<div class="list" id="statistics" hx-ext="ws" ws-connect="/dashboard/statistics?api_key={api_key}">
-  <h2>Statistics</h2>
-  <table>
-    <tr>
-      <td>Connections</td>
-      <td id="connections"></td>
-    </tr>
-    <tr>
-      <td>Start time</td>
-      <td id="start_time"></td>
-    </tr>
-    <tr>
-      <td>Total megabytes in</td>
-      <td id="total_in"></td>
-    </tr>
-    <tr>
-      <td>Total megabytes out</td>
-      <td id="total_out"></td>
-    </tr>
-  </table>
-</div>
-<div class="list" id="queue" hx-ext="ws" ws-connect="/dashboard/queue?api_key={api_key}">
-  <h2>Queued connections</h2>
+  <div class="list" id="statistics" hx-ext="ws" ws-connect="/dashboard/statistics?api_key={api_key}">
+    <h2>Statistics</h2>
+    <table>
+      <tr>
+        <td>Connections</td>
+        <td id="connections"></td>
+      </tr>
+      <tr>
+        <td>Start time</td>
+        <td id="start_time"></td>
+      </tr>
+      <tr>
+        <td>Total megabytes in</td>
+        <td id="total_in"></td>
+      </tr>
+      <tr>
+        <td>Total megabytes out</td>
+        <td id="total_out"></td>
+      </tr>
+    </table>
+  </div>
+  <div class="list" id="queue" hx-ext="ws" ws-connect="/dashboard/queue?api_key={api_key}">
+    <h2>Queued connections</h2>
 
-  <table id="queued_connections">
-  </table>
+    <table id="queued_connections">
+    </table>
+  </div>
 </div>
