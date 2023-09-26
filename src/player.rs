@@ -133,10 +133,20 @@ async fn index(state: Data<State>) -> Html {
                 .ok()
                 .map(|_| html! {"../res/player/available_stream.html", "{stream}" => stream})
         })
-        .collect::<String>()
+        .collect::<Vec<String>>()
         .await;
+
+    let content = if buttons.is_empty() {
+        "<p><code>No streams available.</code></p>".to_string()
+    } else {
+        format!(
+            "<p><code>Select a stream to watch.</code></p> {}",
+            buttons.join("")
+        )
+    };
+
     Html(html! {"../res/player/index.html",
-        "{buttons}" => buttons
+        "{content}" => content
     })
 }
 
