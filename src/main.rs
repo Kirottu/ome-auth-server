@@ -45,7 +45,7 @@ struct OmeStatisticsResponse {
 
 #[derive(Deserialize, Clone)]
 pub struct Config {
-    /// The API keys mapped to stream keys
+    db_url: String,
     bind: String,
     ome_host: String,
     ome_api_host: String,
@@ -293,7 +293,7 @@ async fn main() {
 
     let pool = Data::new(
         MySqlPoolOptions::new()
-            .connect("mysql://ome_auth:ome_auth@localhost:3306/ome_auth")
+            .connect(&config.db_url)
             .await
             .unwrap(),
     );
