@@ -2,7 +2,7 @@ use actix::Addr;
 use actix_web::{
     get, post,
     web::{Data, Form, Query},
-    HttpResponse, Result,
+    Result,
 };
 use argon2::{password_hash::SaltString, PasswordHash};
 use serde::Deserialize;

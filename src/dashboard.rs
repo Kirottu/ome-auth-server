@@ -10,7 +10,7 @@ use actix_web_actors::ws;
 use sqlx::MySqlPool;
 use uuid::Uuid;
 
-use crate::{auth_as_streamer, html, manager, ome_statistics, Config, Credentials, Error, Html};
+use crate::{auth_as_streamer, html, manager, ome_statistics, Config, Credentials, Html};
 
 pub struct QueueWebSocket {
     hb: Instant,

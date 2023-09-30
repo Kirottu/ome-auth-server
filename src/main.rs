@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, fs, time::Instant};
+use std::{fmt::Display, fs};
 
 use actix::{Actor, Addr};
 use actix_files::Files;
