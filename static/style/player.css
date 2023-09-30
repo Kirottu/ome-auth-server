@@ -1,0 +1,30 @@
+#buttons {
+  display: flex;
+  column-gap: 10px;
+  padding-bottom: 20px;
+}
+
+#player_wrapper {
+  height: 97vh;
+}
+
+
+.stream_button {
+  background-color: darkgreen;
+  color: white;
+  border: 1px green;
+  padding: 10px;
+  border-radius: 5px;
+}
+
+.stream_button:hover {
+  background-color: green;
+}
+
+.harold {
+  margin-bottom: 20px;
+}
+
+p {
+  font-size: large;
+}

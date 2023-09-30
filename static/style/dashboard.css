@@ -1,0 +1,43 @@
+#main-div {
+  display: flex;
+  flex-direction: row;
+  justify-content: center;
+}
+
+th {
+  text-align: start;
+  width: 200px;
+}
+
+td {
+  text-align: start;
+  width: 200px;
+}
+
+.error {
+  color: red;
+}
+
+.notify {
+  animation: notify linear 1s;
+}
+
+@keyframes notify {
+  from {
+    background-color: orangered;
+  }
+
+  to {
+    background-color: transparent;
+  }
+}
+
+body {
+  background-color: black;
+  color: #dddddd;
+}
+
+
+.larger {
+  font-size: large;
+}

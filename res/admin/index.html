@@ -3,19 +3,18 @@
 
 <head>
   <meta charset="UTF-8">
-  <title>OME Auth Dashboard</title>
+  <title>OME Auth Admin Dashboard</title>
 
   <link rel="stylesheet" href="/static/style/common.css">
-  <link rel="stylesheet" href="/static/style/dashboard.css">
+  <link rel="stylesheet" href="/static/style/admin.css">
 
   <script src="https://unpkg.com/htmx.org@1.9.5"></script>
-  <script src="https://unpkg.com/htmx.org/dist/ext/ws.js"></script>
 </head>
 
 <body>
   <div class="centered fade_in">
-    <h1><code>The Control Room</code></h1>
-    <form class="login_form" hx-get="/dashboard/dashboard"
+    <h1><code>Harold's lair</code></h1>
+    <form class="login_form" hx-get="/admin/dashboard"
       hx-headers='{"Content-Type": "application/x-www-form-urlencoded"}' hx-target="body">
       <input type="text" name="id" autocomplete="username"><br>
       <input type="password" name="key" autocomplete="current-password"><br>

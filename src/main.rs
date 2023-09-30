@@ -1,19 +1,33 @@
-use std::{collections::HashMap, fmt::Display, fs};
+use std::{collections::HashMap, fmt::Display, fs, time::Instant};
 
 use actix::{Actor, Addr};
+use actix_files::Files;
 use actix_web::{
     body::BoxBody,
     post,
     web::{Data, Json},
     App, HttpResponse, HttpServer, Responder, ResponseError, Result,
 };
+use argon2::PasswordHash;
 use manager::Manager;
 use serde::{Deserialize, Serialize};
+use sqlx::{mysql::MySqlPoolOptions, MySqlPool};
 
+mod admin;
 mod dashboard;
 mod manager;
 mod player;
-mod static_files;
+
+struct StreamConfig {
+    id: String,
+    key_hash: String,
+}
+
+#[derive(Deserialize)]
+pub struct Credentials {
+    id: String,
+    key: String,
+}
 
 #[derive(Deserialize)]
 struct OmeStatistics {
@@ -30,13 +44,14 @@ struct OmeStatisticsResponse {
 }
 
 #[derive(Deserialize, Clone)]
-struct Config {
+pub struct Config {
     /// The API keys mapped to stream keys
-    api_keys: HashMap<String, String>,
     bind: String,
     ome_host: String,
     ome_api_host: String,
     ome_api_credentials: String,
+    admin_id: String,
+    admin_key_hash: String,
 }
 
 #[derive(Deserialize, Serialize, Clone, Hash, Eq, PartialEq)]
@@ -58,11 +73,6 @@ pub struct Request {
 struct AdmissionRequest {
     client: Client,
     request: Request,
-}
-
-pub struct State {
-    config: Config,
-    agent: ureq::Agent,
 }
 
 #[derive(Serialize)]
@@ -104,7 +114,7 @@ impl Responder for Html {
 }
 
 #[derive(Debug)]
-enum Error {
+pub enum Error {
     Unauthorized,
     BadRequest,
     InternalError,
@@ -147,7 +157,8 @@ macro_rules! html {
 
 #[post("/api/auth")]
 async fn auth(
-    state: Data<State>,
+    config: Data<Config>,
+    pool: Data<MySqlPool>,
     manager: Data<Addr<Manager>>,
     request: Json<AdmissionRequest>,
 ) -> Result<AuthResponse, Error> {
@@ -155,20 +166,19 @@ async fn auth(
         "opening" => match request.request.direction.as_str() {
             "incoming" => {
                 let mut split = request.request.url.split('/').skip(3);
-                let key = split.next().ok_or(Error::Unauthorized)?;
+                let id = split.next().ok_or(Error::BadRequest)?;
+                let key = split.next().ok_or(Error::BadRequest)?;
 
-                if let Some(stream) = state.config.api_keys.get(key) {
+                if auth_as_streamer(pool, id, key).await.is_ok() {
                     tracing::info!(
                         "Allowing incoming stream from {} to stream to ID: {}",
                         request.client.address,
-                        stream
+                        id,
                     );
-
-                    let new_url = request.request.url.replace(key, &format!("app/{}", stream));
 
                     Ok(AuthResponse::Opening(Response {
                         allowed: true,
-                        new_url: Some(new_url),
+                        new_url: Some(format!("rtmp://{}/app/{}", config.ome_host, id)),
                         lifetime: None,
                         reason: None,
                     }))
@@ -242,14 +252,30 @@ async fn auth(
     }
 }
 
-fn ome_statistics(state: Data<State>, stream: &str) -> Result<OmeStatisticsResponse, Error> {
-    Ok(state
-        .agent
+/// Helper function to authenticate as the streamer
+async fn auth_as_streamer(pool: Data<MySqlPool>, id: &str, key: &str) -> Result<(), Error> {
+    let stream = sqlx::query_as!(StreamConfig, "SELECT * FROM streams WHERE id = ?", id)
+        .fetch_one(&*pool.into_inner())
+        .await
+        .map_err(|_| Error::Unauthorized)?;
+
+    let hash = PasswordHash::parse(&stream.key_hash, argon2::password_hash::Encoding::B64).unwrap();
+
+    hash.verify_password(&[&argon2::Argon2::default()], key)
+        .map_err(|_| Error::Unauthorized)
+}
+
+fn ome_statistics(
+    config: Data<Config>,
+    agent: Data<ureq::Agent>,
+    stream: &str,
+) -> Result<OmeStatisticsResponse, Error> {
+    Ok(agent
         .get(&format!(
             "{}/v1/stats/current/vhosts/default/apps/app/streams/{}",
-            state.config.ome_api_host, stream
+            config.ome_api_host, stream
         ))
-        .set("Authorization", &state.config.ome_api_credentials)
+        .set("Authorization", &config.ome_api_credentials)
         .call()
         .map_err(|_why| Error::InternalError)?
         .into_json::<OmeStatistics>()
@@ -261,21 +287,38 @@ fn ome_statistics(state: Data<State>, stream: &str) -> Result<OmeStatisticsRespo
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config: Config = ron::de::from_bytes(&fs::read("config.ron").unwrap()).unwrap();
+    let config: Data<Config> =
+        Data::new(ron::de::from_bytes(&fs::read("config.ron").unwrap()).unwrap());
     let bind = config.bind.clone();
 
-    let queue_actor =
-        Manager::new(&config.api_keys.clone().into_values().collect::<Vec<_>>()).start();
+    let pool = Data::new(
+        MySqlPoolOptions::new()
+            .connect("mysql://ome_auth:ome_auth@localhost:3306/ome_auth")
+            .await
+            .unwrap(),
+    );
 
-    let state = Data::new(State {
-        config,
-        agent: ureq::Agent::new(),
-    });
+    let streams = sqlx::query_as!(StreamConfig, "SELECT * FROM streams")
+        .fetch_all(&*pool.clone().into_inner())
+        .await
+        .unwrap();
+
+    let queue_actor = Manager::new(
+        &streams
+            .into_iter()
+            .map(|stream| stream.id)
+            .collect::<Vec<_>>(),
+    )
+    .start();
+
+    let agent = Data::new(ureq::Agent::new());
 
     HttpServer::new(move || {
         App::new()
             .app_data(Data::new(queue_actor.clone()))
-            .app_data(state.clone())
+            .app_data(pool.clone())
+            .app_data(config.clone())
+            .app_data(agent.clone())
             .service(auth)
             .service(dashboard::index)
             .service(dashboard::dashboard)
@@ -284,9 +327,12 @@ async fn main() {
             .service(player::index)
             .service(player::enqueue)
             .service(player::queue_ws)
-            .service(static_files::notification)
-            .service(static_files::haroldium)
-            .service(static_files::killmeplz)
+            .service(admin::index)
+            .service(admin::dashboard)
+            .service(admin::create_stream_menu)
+            .service(admin::create_stream)
+            .service(admin::remove_stream)
+            .service(Files::new("/static", "./static").prefer_utf8(true))
     })
     .bind(bind)
     .unwrap()

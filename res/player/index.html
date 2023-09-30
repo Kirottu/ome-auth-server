@@ -7,61 +7,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Kirottu's streaming den</title>
 
+  <link rel="stylesheet" href="/static/style/player.css">
+  <link rel="stylesheet" href="/static/style/common.css">
   <style>
-    #buttons {
-      display: flex;
-      column-gap: 10px;
-      padding-bottom: 20px;
-    }
-
-    #player_wrapper {
-      height: 97vh;
-    }
-
-    body {
-      background: black;
-      color: white;
-    }
-
-    .centered {
-      width: 97vw;
-      height: 98vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      flex-direction: column;
-      animation: fade_in ease 1s;
-    }
-
-    .stream_button {
-      background-color: darkgreen;
-      color: white;
-      border: 1px green;
-      padding: 10px;
-      border-radius: 5px;
-    }
-
-    .stream_button:hover {
-      background-color: green;
-    }
-
-    .harold {
-      margin-bottom: 20px;
-    }
-
-    p {
-      font-size: large;
-    }
-
-    @keyframes fade_in {
-      from {
-        opacity: 0;
-      }
-
-      to {
-        opacity: 1;
-      }
-    }
   </style>
 
   <script src="https://unpkg.com/htmx.org@1.9.5"></script>
@@ -71,7 +19,7 @@
 </head>
 
 <body>
-  <div id="center" class="centered">
+  <div id="center" class="centered fade_in">
     <h1><code>Kirottu's streaming den</code></h1>
     {content}
   </div>

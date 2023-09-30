@@ -1,0 +1,6 @@
+<form class="fade_in" hx-post="/admin/create_stream?id={id}&key={key}"
+  hx-headers='{"Content-Type": "application/x-www-form-urlencoded"}' hx-target="body">
+  <input type="text" placeholder="Stream ID" name="stream_id"><br>
+  <input type="password" placeholder="Stream Key" name="stream_key"><br>
+  <button class="btn green_btn"><code class="larger">Create stream</code></button>
+</form>

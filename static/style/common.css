@@ -1,0 +1,74 @@
+body {
+  background: black;
+  color: #dddddd;
+}
+
+.centered {
+  width: 97vw;
+  height: 98vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+.login_form {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+input[type=password],
+input[type=text] {
+  padding: 5px;
+  margin-bottom: 10px;
+  margin-top: 10px;
+  background-color: black;
+  border: 2px solid darkgreen;
+  border-radius: 5px;
+  color: white;
+}
+
+input[type=password]:focus,
+input[type=text]:focus {
+  border: 2px solid green;
+  outline: 2px solid darkgreen;
+}
+
+.green_btn {
+  background-color: darkgreen;
+}
+
+.green_btn:hover {
+  background-color: green;
+}
+
+.red_btn {
+  background-color: darkred;
+}
+
+.red_btn:hover {
+  background-color: #aa0000;
+}
+
+.btn {
+  color: white;
+  border: none;
+  padding: 10px;
+  border-radius: 5px;
+}
+
+.fade_in {
+  animation: fade_in ease 1s;
+}
+
+@keyframes fade_in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}

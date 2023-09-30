@@ -51,6 +51,18 @@ pub struct RecipientDisconnected {
     pub recipient: Recipient<dashboard::Refresh>,
 }
 
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct StreamCreated {
+    pub stream: String,
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct StreamRemoved {
+    pub stream: String,
+}
+
 #[derive(Default)]
 struct StreamData {
     queue: HashMap<Uuid, QueuedPlayer>,
@@ -186,11 +198,11 @@ impl Handler<RecipientDisconnected> for Manager {
     type Result = <RecipientDisconnected as Message>::Result;
 
     fn handle(&mut self, msg: RecipientDisconnected, _ctx: &mut Self::Context) -> Self::Result {
-        self.streams
-            .get_mut(&msg.stream)
-            .unwrap()
-            .queue_recipients
-            .retain(|recipient| *recipient != msg.recipient);
+        if let Some(stream) = self.streams.get_mut(&msg.stream) {
+            stream
+                .queue_recipients
+                .retain(|recipient| *recipient != msg.recipient);
+        }
     }
 }
 
@@ -209,5 +221,21 @@ impl Handler<IsAuthorized> for Manager {
             tracing::info!("Uuid missing, denied access");
             false
         }
+    }
+}
+
+impl Handler<StreamCreated> for Manager {
+    type Result = <StreamCreated as Message>::Result;
+
+    fn handle(&mut self, msg: StreamCreated, _ctx: &mut Self::Context) -> Self::Result {
+        self.streams.insert(msg.stream, StreamData::default());
+    }
+}
+
+impl Handler<StreamRemoved> for Manager {
+    type Result = <StreamRemoved as Message>::Result;
+
+    fn handle(&mut self, msg: StreamRemoved, _ctx: &mut Self::Context) -> Self::Result {
+        self.streams.remove(&msg.stream);
     }
 }

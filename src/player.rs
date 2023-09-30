@@ -1,4 +1,4 @@
-use crate::{html, manager, ome_statistics, Html, State};
+use crate::{html, manager, ome_statistics, Config, Html, StreamConfig};
 use actix::{Actor, ActorContext, Addr, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{
     get,
@@ -8,6 +8,7 @@ use actix_web::{
 use actix_web_actors::ws;
 use futures::StreamExt;
 use serde::Deserialize;
+use sqlx::MySqlPool;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -126,12 +127,21 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for QueueWebSocket {
 }
 
 #[get("/player")]
-async fn index(state: Data<State>) -> Html {
-    let buttons = futures::stream::iter(state.config.api_keys.values())
-        .filter_map(|stream| async {
-            ome_statistics(state.clone(), stream)
-                .ok()
-                .map(|_| html! {"../res/player/available_stream.html", "{stream}" => stream})
+async fn index(config: Data<Config>, pool: Data<MySqlPool>, agent: Data<ureq::Agent>) -> Html {
+    let streams = sqlx::query_as!(StreamConfig, "SELECT * FROM streams")
+        .fetch_all(&*pool.into_inner())
+        .await
+        .unwrap();
+
+    let buttons = futures::stream::iter(streams.iter().map(|stream| stream.id.clone()))
+        .filter_map(|stream| {
+            let config = config.clone();
+            let agent = agent.clone();
+            async move {
+                ome_statistics(config, agent, &stream)
+                    .ok()
+                    .map(|_| html! {"../res/player/available_stream.html", "{stream}" => stream})
+            }
         })
         .collect::<Vec<String>>()
         .await;
@@ -160,7 +170,7 @@ async fn enqueue(query: Query<StreamQuery>) -> Html {
 #[get("/player/queue_ws")]
 async fn queue_ws(
     manager: Data<Addr<manager::Manager>>,
-    state: Data<State>,
+    config: Data<Config>,
     req: HttpRequest,
     payload: Payload,
     query: Query<StreamQuery>,
@@ -178,7 +188,7 @@ async fn queue_ws(
     ws::start(
         QueueWebSocket::new(
             manager.get_ref().clone(),
-            state.config.ome_host.clone(),
+            config.ome_host.clone(),
             addr,
             query.stream.clone(),
         ),

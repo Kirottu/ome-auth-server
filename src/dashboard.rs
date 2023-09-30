@@ -7,20 +7,15 @@ use actix_web::{
     HttpRequest, HttpResponse, Result,
 };
 use actix_web_actors::ws;
-use serde::Deserialize;
+use sqlx::MySqlPool;
 use uuid::Uuid;
 
-use crate::{html, manager, ome_statistics, Error, Html, State};
+use crate::{auth_as_streamer, html, manager, ome_statistics, Config, Credentials, Error, Html};
 
 pub struct QueueWebSocket {
     hb: Instant,
     addr: Addr<manager::Manager>,
     stream: String,
-}
-
-#[derive(Deserialize)]
-pub struct ApiKeyQuery {
-    api_key: String,
 }
 
 #[derive(Message)]
@@ -67,7 +62,7 @@ impl QueueWebSocket {
             .map(|(uuid, queued_player)| {
                 let (class, _notification) = if let Some(_uuid) = new {
                     if *uuid == _uuid {
-                        (r#"class="notify""#, r#"<audio src="/static/notification" autoplay="true">"#)
+                        (r#"class="notify""#, r#"<audio src="/static/Oi.wav" autoplay="true">"#)
                     } else {
                         ("", "")
                     }
@@ -135,7 +130,8 @@ impl Handler<Refresh> for QueueWebSocket {
 }
 struct StatisticsWebSocket {
     hb: Instant,
-    state: Data<State>,
+    config: Data<Config>,
+    agent: Data<ureq::Agent>,
     stream: String,
 }
 
@@ -143,10 +139,11 @@ impl StatisticsWebSocket {
     const INTERVAL: Duration = Duration::from_secs(1);
     const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-    fn new(state: Data<State>, stream: String) -> Self {
+    fn new(config: Data<Config>, agent: Data<ureq::Agent>, stream: String) -> Self {
         Self {
             hb: Instant::now(),
-            state,
+            config,
+            agent,
             stream,
         }
     }
@@ -159,10 +156,11 @@ impl StatisticsWebSocket {
                 return;
             }
 
-            let state = act.state.clone();
+            let config = act.config.clone();
+            let agent = act.agent.clone();
             let stream = act.stream.clone();
 
-            let content = match ome_statistics(state, &stream) {
+            let content = match ome_statistics(config, agent, &stream) {
                 Ok(_statistics) => html! {"../res/dashboard/statistics.html",
                     "{connections}" => _statistics.total_connections,
                     "{start_time}" => _statistics.created_time,
@@ -206,58 +204,47 @@ impl Actor for StatisticsWebSocket {
     }
 }
 #[get("/dashboard/queue")]
-pub async fn queue(
+async fn queue(
     req: HttpRequest,
     payload: Payload,
-    state: Data<State>,
+    pool: Data<MySqlPool>,
     addr: Data<Addr<manager::Manager>>,
-    query: Query<ApiKeyQuery>,
+    credentials: Query<Credentials>,
 ) -> Result<HttpResponse> {
-    let stream = state
-        .config
-        .api_keys
-        .get(&query.api_key)
-        .ok_or(Error::Unauthorized)?
-        .clone();
+    auth_as_streamer(pool, &credentials.id, &credentials.key).await?;
 
     ws::start(
-        QueueWebSocket::new(addr.get_ref().clone(), stream),
+        QueueWebSocket::new(addr.get_ref().clone(), credentials.id.clone()),
         &req,
         payload,
     )
 }
 
 #[get("/dashboard/statistics")]
-pub async fn statistics(
+async fn statistics(
     req: HttpRequest,
     payload: Payload,
-    state: Data<State>,
-    query: Query<ApiKeyQuery>,
+    config: Data<Config>,
+    agent: Data<ureq::Agent>,
+    pool: Data<MySqlPool>,
+    credentials: Query<Credentials>,
 ) -> Result<HttpResponse> {
-    let stream = state
-        .config
-        .api_keys
-        .get(&query.api_key)
-        .ok_or(Error::Unauthorized)?;
+    auth_as_streamer(pool, &credentials.id, &credentials.key).await?;
 
     ws::start(
-        StatisticsWebSocket::new(state.clone(), stream.clone()),
+        StatisticsWebSocket::new(config.clone(), agent, credentials.id.clone()),
         &req,
         payload,
     )
 }
 
 #[get("/dashboard/dashboard")]
-async fn dashboard(state: Data<State>, query: Query<ApiKeyQuery>) -> Result<Html> {
-    let stream = state
-        .config
-        .api_keys
-        .get(&query.api_key)
-        .ok_or(Error::Unauthorized)?;
+async fn dashboard(pool: Data<MySqlPool>, credentials: Query<Credentials>) -> Result<Html> {
+    auth_as_streamer(pool, &credentials.id, &credentials.key).await?;
 
     Ok(Html(html! {"../res/dashboard/dashboard.html",
-        "{stream}" => stream,
-        "{api_key}" => query.api_key
+        "{id}" => credentials.id,
+        "{key}" => credentials.key
     }))
 }
 
