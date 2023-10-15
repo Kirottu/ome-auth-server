@@ -148,15 +148,17 @@ impl Handler<Enqueue> for Manager {
     type Result = <Enqueue as Message>::Result;
 
     fn handle(&mut self, msg: Enqueue, _ctx: &mut Self::Context) -> Self::Result {
-        self.streams.get_mut(&msg.stream).unwrap().queue.insert(
-            msg.uuid,
-            QueuedPlayer {
-                ip_addr: msg.ip_addr,
-                addr: msg.addr,
-                allow: false,
-            },
-        );
-        self.refresh_sockets(Some(msg.uuid), &msg.stream);
+        if let Some(stream) = self.streams.get_mut(&msg.stream) {
+            stream.queue.insert(
+                msg.uuid,
+                QueuedPlayer {
+                    ip_addr: msg.ip_addr,
+                    addr: msg.addr,
+                    allow: false,
+                },
+            );
+            self.refresh_sockets(Some(msg.uuid), &msg.stream);
+        }
     }
 }
 
@@ -164,12 +166,10 @@ impl Handler<Dequeue> for Manager {
     type Result = <Dequeue as Message>::Result;
 
     fn handle(&mut self, msg: Dequeue, _ctx: &mut Self::Context) -> Self::Result {
-        self.streams
-            .get_mut(&msg.stream)
-            .unwrap()
-            .queue
-            .remove(&msg.uuid);
-        self.refresh_sockets(None, &msg.stream);
+        if let Some(stream) = self.streams.get_mut(&msg.stream) {
+            stream.queue.remove(&msg.uuid);
+            self.refresh_sockets(None, &msg.stream);
+        }
     }
 }
 
