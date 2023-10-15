@@ -21,7 +21,15 @@
 <body>
   <div id="center" class="centered fade_in">
     <h1><code>Kirottu's streaming den</code></h1>
-    {content}
+    {% if streams.len() == 0 %}
+    <p><code>No streams available.</code></p>
+    {% else %}
+    <p><code>Select a stream to watch.</code></p>
+    {% for stream in streams %}
+    <button hx-get="/player/enqueue?stream={{ stream }}" hx-swap="outerHTML" hx-target="#center"
+      class="stream_button"><code>{{ stream }}</code></button>
+    {% endfor %}
+    {% endif %}
   </div>
 </body>
 

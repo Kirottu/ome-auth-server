@@ -1,0 +1,25 @@
+<div id="statistics" hx-swap-oob="true">
+  {% match statistics %}
+  {% when Some with (val) %}
+  <table>
+    <tr>
+      <td>Connections</td>
+      <td>{{ val.total_connections }}</td>
+    </tr>
+    <tr>
+      <td>Start time</td>
+      <td>{{ val.created_time }}</td>
+    </tr>
+    <tr>
+      <td>Total data in</td>
+      <td>{{ val.total_bytes_in|filesizeformat }}</td>
+    </tr>
+    <tr>
+      <td>Total data out</td>
+      <td>{{ val.total_bytes_out|filesizeformat }}</td>
+    </tr>
+  </table>
+  {% when None %}
+  <span class="error">Statistics unavailable: stream not running!</span>
+  {% endmatch %}
+</div>

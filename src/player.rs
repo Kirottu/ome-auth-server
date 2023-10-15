@@ -1,4 +1,4 @@
-use crate::{html, manager, ome_statistics, Config, Html, StreamConfig};
+use crate::{manager, ome_statistics, Config, Html, StreamConfig};
 use actix::{Actor, ActorContext, Addr, AsyncContext, Handler, Message, StreamHandler};
 use actix_web::{
     get,
@@ -6,11 +6,40 @@ use actix_web::{
     HttpRequest, HttpResponse, Result,
 };
 use actix_web_actors::ws;
-use futures::StreamExt;
+use askama::Template;
 use serde::Deserialize;
 use sqlx::MySqlPool;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+
+mod templates {
+    use askama::Template;
+    use uuid::Uuid;
+
+    #[derive(Template)]
+    #[template(path = "player/index.html")]
+    pub struct Index<'a> {
+        pub streams: &'a [&'a String],
+    }
+
+    #[derive(Template)]
+    #[template(path = "player/enqueue.html")]
+    pub struct Enqueue<'a> {
+        pub stream: &'a str,
+    }
+
+    #[derive(Template)]
+    #[template(path = "player/player.html")]
+    pub struct Player<'a> {
+        pub stream: &'a str,
+        pub host: &'a str,
+        pub uuid: &'a Uuid,
+    }
+
+    #[derive(Template)]
+    #[template(path = "player/denied.html")]
+    pub struct Denied;
+}
 
 pub struct QueueWebSocket {
     hb: Instant,
@@ -91,13 +120,17 @@ impl Handler<Handle> for QueueWebSocket {
 
     fn handle(&mut self, msg: Handle, ctx: &mut Self::Context) -> Self::Result {
         if msg.0 {
-            ctx.text(html! {"../res/player/player.html",
-                "{host}" => self.ome_host,
-                "{uuid}" => self.uuid,
-                "{stream}" => self.stream
-            });
+            ctx.text(
+                templates::Player {
+                    stream: &self.stream,
+                    host: &self.ome_host,
+                    uuid: &self.uuid,
+                }
+                .render()
+                .unwrap(),
+            );
         } else {
-            ctx.text(html! {"../res/player/denied.html"});
+            ctx.text(templates::Denied.render().unwrap());
             ctx.close(None);
         }
     }
@@ -133,38 +166,27 @@ async fn index(config: Data<Config>, pool: Data<MySqlPool>, agent: Data<ureq::Ag
         .await
         .unwrap();
 
-    let buttons = futures::stream::iter(streams.iter().map(|stream| stream.id.clone()))
+    let streams = streams
+        .iter()
         .filter_map(|stream| {
-            let config = config.clone();
-            let agent = agent.clone();
-            async move {
-                ome_statistics(config, agent, &stream)
-                    .ok()
-                    .map(|_| html! {"../res/player/available_stream.html", "{stream}" => stream})
-            }
+            ome_statistics(config.clone(), agent.clone(), &stream.id)
+                .ok()
+                .map(move |_| &stream.id)
         })
-        .collect::<Vec<String>>()
-        .await;
+        .collect::<Vec<_>>();
 
-    let content = if buttons.is_empty() {
-        "<p><code>No streams available.</code></p>".to_string()
-    } else {
-        format!(
-            "<p><code>Select a stream to watch.</code></p> {}",
-            buttons.join("")
-        )
-    };
-
-    Html(html! {"../res/player/index.html",
-        "{content}" => content
-    })
+    Html(templates::Index { streams: &streams }.render().unwrap())
 }
 
 #[get("/player/enqueue")]
 async fn enqueue(query: Query<StreamQuery>) -> Html {
-    Html(html! {"../res/player/enqueue.html",
-        "{stream}" => query.stream
-    })
+    Html(
+        templates::Enqueue {
+            stream: &query.stream,
+        }
+        .render()
+        .unwrap(),
+    )
 }
 
 #[get("/player/queue_ws")]

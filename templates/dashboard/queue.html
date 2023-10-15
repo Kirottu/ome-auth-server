@@ -1,0 +1,20 @@
+<table id="queued_connections" hx-swap-oob="true">
+  <tr>
+    <th>Address</th>
+    <th>UUID</th>
+  </tr>
+  {% for queued in queue %}
+  <tr class={% if queued.new %} "notify" {% else %} "" {% endif %}>
+    <td><code>{{ queued.address }}</code></td>
+    <td><code>{{ queued.uuid }}</code></td>
+
+    <td>
+      <button id="allow" class="btn green_btn" hx-vals='{{ queued.allow|json }}' hx-swap="none" ws-send>Allow</button>
+      <button id="deny" class="btn red_btn" hx-vals='{{ queued.deny|json }}' hx-swap="none" ws-send>Deny</button>
+      {% if queued.new %}
+      <audio src="/static/Oi.wav" autoplay="true">
+        {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>

@@ -1,12 +1,12 @@
-use std::{fmt::Display, fs};
+use std::fs;
 
 use actix::{Actor, Addr};
 use actix_files::Files;
 use actix_web::{
     body::BoxBody,
-    post,
+    error, post,
     web::{Data, Json},
-    App, HttpResponse, HttpServer, Responder, ResponseError, Result,
+    App, HttpResponse, HttpServer, Responder, Result,
 };
 use argon2::PasswordHash;
 use manager::Manager;
@@ -36,11 +36,11 @@ struct OmeStatistics {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OmeStatisticsResponse {
-    created_time: String,
-    total_connections: u32,
-    total_bytes_in: u64,
-    total_bytes_out: u64,
+pub struct OmeStatisticsResponse {
+    pub created_time: String,
+    pub total_connections: u32,
+    pub total_bytes_in: u64,
+    pub total_bytes_out: u64,
 }
 
 #[derive(Deserialize, Clone)]
@@ -113,61 +113,23 @@ impl Responder for Html {
     }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    Unauthorized,
-    BadRequest,
-    InternalError,
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Error::Unauthorized => "Unauthorized",
-                Error::BadRequest => "Bad request",
-                Error::InternalError => "Internal server error",
-            }
-        )
-    }
-}
-
-impl ResponseError for Error {}
-
-/// Macro to easily fill up templates
-#[macro_export]
-macro_rules! html {
-    ( $html:literal ) => {
-        include_str!($html).to_owned()
-    };
-    ( $html:literal, $( $from:literal => $to:expr ),* ) => {
-        {
-            let mut res = include_str!($html).to_owned();
-
-            $(
-                res = res.replace($from, &$to.to_string());
-            )*
-
-            res
-        }
-    };
-}
-
 #[post("/api/auth")]
 async fn auth(
     config: Data<Config>,
     pool: Data<MySqlPool>,
     manager: Data<Addr<Manager>>,
     request: Json<AdmissionRequest>,
-) -> Result<AuthResponse, Error> {
+) -> Result<AuthResponse> {
     match request.request.status.as_str() {
         "opening" => match request.request.direction.as_str() {
             "incoming" => {
                 let mut split = request.request.url.split('/').skip(3);
-                let id = split.next().ok_or(Error::BadRequest)?;
-                let key = split.next().ok_or(Error::BadRequest)?;
+                let id = split
+                    .next()
+                    .ok_or(error::ErrorBadRequest("Missing Stream ID"))?;
+                let key = split
+                    .next()
+                    .ok_or(error::ErrorBadRequest("Missing Stream Key"))?;
 
                 if auth_as_streamer(pool, id, key).await.is_ok() {
                     tracing::info!(
@@ -237,7 +199,7 @@ async fn auth(
                     }))
                 }
             }
-            _ => Err(Error::BadRequest),
+            _ => Err(error::ErrorBadRequest("Invalid stream direction")),
         },
         "closing" => {
             tracing::info!(
@@ -248,28 +210,28 @@ async fn auth(
 
             Ok(AuthResponse::Closing)
         }
-        _ => Err(Error::BadRequest),
+        _ => Err(error::ErrorBadRequest("Invalid stream status")),
     }
 }
 
 /// Helper function to authenticate as the streamer
-async fn auth_as_streamer(pool: Data<MySqlPool>, id: &str, key: &str) -> Result<(), Error> {
+async fn auth_as_streamer(pool: Data<MySqlPool>, id: &str, key: &str) -> Result<()> {
     let stream = sqlx::query_as!(StreamConfig, "SELECT * FROM streams WHERE id = ?", id)
         .fetch_one(&*pool.into_inner())
         .await
-        .map_err(|_| Error::Unauthorized)?;
+        .map_err(|_| error::ErrorUnauthorized("Invalid Stream ID"))?;
 
     let hash = PasswordHash::parse(&stream.key_hash, argon2::password_hash::Encoding::B64).unwrap();
 
     hash.verify_password(&[&argon2::Argon2::default()], key)
-        .map_err(|_| Error::Unauthorized)
+        .map_err(|_| error::ErrorUnauthorized("Invalid Stream Key"))
 }
 
 fn ome_statistics(
     config: Data<Config>,
     agent: Data<ureq::Agent>,
     stream: &str,
-) -> Result<OmeStatisticsResponse, Error> {
+) -> Result<OmeStatisticsResponse> {
     Ok(agent
         .get(&format!(
             "{}/v1/stats/current/vhosts/default/apps/app/streams/{}",
@@ -277,9 +239,9 @@ fn ome_statistics(
         ))
         .set("Authorization", &config.ome_api_credentials)
         .call()
-        .map_err(|_why| Error::InternalError)?
+        .map_err(error::ErrorInternalServerError)?
         .into_json::<OmeStatistics>()
-        .map_err(|_why| Error::InternalError)?
+        .map_err(error::ErrorInternalServerError)?
         .response)
 }
 
@@ -311,14 +273,14 @@ async fn main() {
     )
     .start();
 
-    let agent = Data::new(ureq::Agent::new());
+    let client = Data::new(ureq::Agent::new());
 
     HttpServer::new(move || {
         App::new()
             .app_data(Data::new(queue_actor.clone()))
             .app_data(pool.clone())
             .app_data(config.clone())
-            .app_data(agent.clone())
+            .app_data(client.clone())
             .service(auth)
             .service(dashboard::index)
             .service(dashboard::dashboard)

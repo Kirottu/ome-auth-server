@@ -7,10 +7,49 @@ use actix_web::{
     HttpRequest, HttpResponse, Result,
 };
 use actix_web_actors::ws;
+use askama::Template;
 use sqlx::MySqlPool;
 use uuid::Uuid;
 
-use crate::{auth_as_streamer, html, manager, ome_statistics, Config, Credentials, Html};
+use crate::{auth_as_streamer, manager, ome_statistics, Config, Credentials, Html};
+
+mod templates {
+    use askama_actix::Template;
+    use uuid::Uuid;
+
+    use crate::{manager, OmeStatisticsResponse};
+
+    #[derive(Template)]
+    #[template(path = "dashboard/index.html")]
+    pub struct Index;
+
+    #[derive(Template)]
+    #[template(path = "dashboard/dashboard.html")]
+    pub struct Dashboard<'a> {
+        pub id: &'a str,
+        pub key: &'a str,
+    }
+
+    #[derive(Template)]
+    #[template(path = "dashboard/queue.html")]
+    pub struct Queue<'a> {
+        pub queue: Vec<QueuedConnection<'a>>,
+    }
+
+    pub struct QueuedConnection<'a> {
+        pub address: &'a str,
+        pub uuid: Uuid,
+        pub new: bool,
+        pub allow: manager::Handle,
+        pub deny: manager::Handle,
+    }
+
+    #[derive(Template)]
+    #[template(path = "dashboard/statistics.html")]
+    pub struct Statistics {
+        pub statistics: Option<OmeStatisticsResponse>,
+    }
+}
 
 pub struct QueueWebSocket {
     hb: Instant,
@@ -57,30 +96,26 @@ impl QueueWebSocket {
         new: Option<Uuid>,
         ctx: &mut ws::WebsocketContext<Self>,
     ) {
-        let content = _queue
+        let _queue = _queue
             .iter()
-            .map(|(uuid, queued_player)| {
-                let (class, _notification) = if let Some(_uuid) = new {
-                    if *uuid == _uuid {
-                        (r#"class="notify""#, r#"<audio src="/static/Oi.wav" autoplay="true">"#)
-                    } else {
-                        ("", "")
-                    }
-                } else {
-                    ("", "")
-                };
-                html! {"../res/dashboard/queued_connection.html",
-                    "{uuid}" => uuid,
-                    "{address}" => queued_player.ip_addr,
-                    "{class}" => class,
-                    "{notification}" => _notification, 
-                    "{allow}" => serde_json::to_string(&manager::Handle {uuid: *uuid, allow: true, stream: self.stream.clone()}).unwrap(),
-                    "{deny}" => serde_json::to_string(&manager::Handle {uuid: *uuid, allow: false, stream: self.stream.clone()}).unwrap()
-                }
+            .map(|(uuid, queued_player)| templates::QueuedConnection {
+                address: &queued_player.ip_addr,
+                uuid: *uuid,
+                new: new.map(|_uuid| _uuid == *uuid).unwrap_or(false),
+                allow: manager::Handle {
+                    uuid: *uuid,
+                    allow: true,
+                    stream: self.stream.clone(),
+                },
+                deny: manager::Handle {
+                    uuid: *uuid,
+                    allow: false,
+                    stream: self.stream.clone(),
+                },
             })
-            .collect::<String>();
+            .collect::<Vec<_>>();
 
-        ctx.text(html! {"../res/dashboard/queue.html", "{content}" => &content})
+        ctx.text(templates::Queue { queue: _queue }.render().unwrap())
     }
 }
 
@@ -139,11 +174,11 @@ impl StatisticsWebSocket {
     const INTERVAL: Duration = Duration::from_secs(1);
     const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-    fn new(config: Data<Config>, agent: Data<ureq::Agent>, stream: String) -> Self {
+    fn new(config: Data<Config>, client: Data<ureq::Agent>, stream: String) -> Self {
         Self {
             hb: Instant::now(),
             config,
-            agent,
+            agent: client,
             stream,
         }
     }
@@ -156,29 +191,16 @@ impl StatisticsWebSocket {
                 return;
             }
 
-            let config = act.config.clone();
-            let agent = act.agent.clone();
-            let stream = act.stream.clone();
+            ctx.ping(&[]);
 
-            let content = match ome_statistics(config, agent, &stream) {
-                Ok(_statistics) => html! {"../res/dashboard/statistics.html",
-                    "{connections}" => _statistics.total_connections,
-                    "{start_time}" => _statistics.created_time,
-                    "{total_in}" => _statistics.total_bytes_in / 1_000_000,
-                    "{total_out}" => _statistics.total_bytes_out / 1_000_000
-                },
-                Err(_) => {
-                    let not_running = r#"<span class="error">Not running!</span>"#;
-                    html! {"../res/dashboard/statistics.html",
-                        "{connections}" => not_running,
-                        "{start_time}" => not_running,
-                        "{total_in}" => not_running,
-                        "{total_out}" => not_running
-                    }
+            ctx.text(
+                templates::Statistics {
+                    statistics: ome_statistics(act.config.clone(), act.agent.clone(), &act.stream)
+                        .ok(),
                 }
-            };
-
-            ctx.text(content);
+                .render()
+                .unwrap(),
+            );
         });
     }
 }
@@ -225,14 +247,14 @@ async fn statistics(
     req: HttpRequest,
     payload: Payload,
     config: Data<Config>,
-    agent: Data<ureq::Agent>,
+    client: Data<ureq::Agent>,
     pool: Data<MySqlPool>,
     credentials: Query<Credentials>,
 ) -> Result<HttpResponse> {
     auth_as_streamer(pool, &credentials.id, &credentials.key).await?;
 
     ws::start(
-        StatisticsWebSocket::new(config.clone(), agent, credentials.id.clone()),
+        StatisticsWebSocket::new(config.clone(), client, credentials.id.clone()),
         &req,
         payload,
     )
@@ -242,13 +264,17 @@ async fn statistics(
 async fn dashboard(pool: Data<MySqlPool>, credentials: Query<Credentials>) -> Result<Html> {
     auth_as_streamer(pool, &credentials.id, &credentials.key).await?;
 
-    Ok(Html(html! {"../res/dashboard/dashboard.html",
-        "{id}" => credentials.id,
-        "{key}" => credentials.key
-    }))
+    Ok(Html(
+        templates::Dashboard {
+            id: &credentials.id,
+            key: &credentials.key,
+        }
+        .render()
+        .unwrap(),
+    ))
 }
 
 #[get("/dashboard")]
 async fn index() -> Html {
-    Html(html! { "../res/dashboard/index.html" })
+    Html(templates::Index.render().unwrap())
 }

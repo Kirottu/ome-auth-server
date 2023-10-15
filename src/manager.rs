@@ -63,13 +63,13 @@ pub struct StreamRemoved {
     pub stream: String,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct StreamData {
     queue: HashMap<Uuid, QueuedPlayer>,
     queue_recipients: Vec<Recipient<dashboard::Refresh>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct QueuedPlayer {
     pub ip_addr: String,
     addr: Addr<player::QueueWebSocket>,

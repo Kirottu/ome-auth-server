@@ -1,10 +1,11 @@
 use actix::Addr;
 use actix_web::{
-    get, post,
+    error, get, post,
     web::{Data, Form, Query},
     Result,
 };
 use argon2::{password_hash::SaltString, PasswordHash};
+use askama::Template;
 use serde::Deserialize;
 use sqlx::MySqlPool;
 
@@ -19,34 +20,53 @@ struct CreateStreamQuery {
     stream_key: String,
 }
 
-use crate::{html, manager, Config, Credentials, Error, Html, StreamConfig};
+use crate::{manager, Config, Credentials, Html, StreamConfig};
 
-/*#[get("/admin/list")]
-pub async fn stream_list(pool: Data<sqlx::MySqlPool>) -> Html {
-    let streams = sqlx::query_as!(StreamConfig, r#"SELECT * FROM streams"#)
-        .fetch_all(&*pool.into_inner())
-        .await
-        .unwrap();
-}*/
+mod templates {
+    use askama::Template;
 
-async fn auth_as_admin(config: Data<Config>, id: &str, key: &str) -> Result<(), Error> {
+    #[derive(Template)]
+    #[template(path = "admin/index.html")]
+    pub struct Index;
+
+    #[derive(Template)]
+    #[template(path = "admin/create_stream_menu.html")]
+    pub struct CreateStreamMenu<'a> {
+        pub id: &'a str,
+        pub key: &'a str,
+    }
+
+    #[derive(Template)]
+    #[template(path = "admin/dashboard.html")]
+    pub struct Dashboard<'a> {
+        pub streams: &'a [String],
+        pub id: &'a str,
+        pub key: &'a str,
+    }
+}
+
+async fn auth_as_admin(config: Data<Config>, id: &str, key: &str) -> Result<()> {
     let hash =
         PasswordHash::parse(&config.admin_key_hash, argon2::password_hash::Encoding::B64).unwrap();
 
     if id != config.admin_id {
-        return Err(Error::Unauthorized);
+        return Err(error::ErrorUnauthorized("Invalid admin ID"));
     }
 
     hash.verify_password(&[&argon2::Argon2::default()], key)
-        .map_err(|_| Error::Unauthorized)
+        .map_err(|_| error::ErrorUnauthorized("Invalid admin key"))
 }
 
 #[get("/admin/create_stream_menu")]
 async fn create_stream_menu(credentials: Query<Credentials>) -> Html {
-    Html(html! {"../res/admin/create_stream_menu.html",
-        "{id}" => credentials.id,
-        "{key}" => credentials.key
-    })
+    Html(
+        templates::CreateStreamMenu {
+            id: &credentials.id,
+            key: &credentials.key,
+        }
+        .render()
+        .unwrap(),
+    )
 }
 
 #[post("/admin/create_stream")]
@@ -56,7 +76,7 @@ async fn create_stream(
     manager: Data<Addr<manager::Manager>>,
     credentials: Query<Credentials>,
     create_stream: Form<CreateStreamQuery>,
-) -> Result<Html, Error> {
+) -> Result<Html> {
     auth_as_admin(config, &credentials.id, &credentials.key).await?;
 
     let salt = SaltString::generate(rand::thread_rng());
@@ -90,7 +110,7 @@ async fn remove_stream(
     config: Data<Config>,
     credentials: Query<Credentials>,
     stream_id: Query<StreamIdQuery>,
-) -> Result<Html, Error> {
+) -> Result<Html> {
     auth_as_admin(config, &credentials.id, &credentials.key).await?;
 
     sqlx::query!("DELETE FROM streams WHERE id = ?", stream_id.stream_id)
@@ -110,7 +130,7 @@ async fn dashboard(
     pool: Data<MySqlPool>,
     config: Data<Config>,
     credentials: Query<Credentials>,
-) -> Result<Html, Error> {
+) -> Result<Html> {
     auth_as_admin(config, &credentials.id, &credentials.key).await?;
 
     Ok(dashboard_inner(pool, credentials).await)
@@ -122,23 +142,21 @@ async fn dashboard_inner(pool: Data<MySqlPool>, credentials: Query<Credentials>)
         .await
         .unwrap()
         .into_iter()
-        .map(|stream| {
-            html! {"../res/admin/stream.html",
-                "{id}" => credentials.id,
-                "{key}" => credentials.key,
-                "{stream_id}" => stream.id
-            }
-        })
-        .collect::<String>();
+        .map(|stream| stream.id)
+        .collect::<Vec<_>>();
 
-    Html(html! {"../res/admin/dashboard.html",
-        "{id}" => credentials.id,
-        "{key}" => credentials.key,
-        "{streams}" => streams
-    })
+    Html(
+        templates::Dashboard {
+            streams: &streams,
+            id: &credentials.id,
+            key: &credentials.key,
+        }
+        .render()
+        .unwrap(),
+    )
 }
 
 #[get("/admin")]
 async fn index() -> Html {
-    Html(html! {"../res/admin/index.html"})
+    Html(templates::Index.render().unwrap())
 }
