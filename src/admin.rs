@@ -94,7 +94,7 @@ async fn create_stream(
     )
     .execute(&*pool.clone().into_inner())
     .await
-    .unwrap();
+    .map_err(error::ErrorInternalServerError)?;
 
     manager.do_send(manager::StreamCreated {
         stream: create_stream.stream_id.clone(),
