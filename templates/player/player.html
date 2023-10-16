@@ -6,18 +6,34 @@
   </div>
 
   <script>
-    OvenPlayer.create('player_id', {
-      sources: [
-        {
-          label: 'label_for_webrtc',
-          // Set the type to 'webrtc'
-          type: 'webrtc',
-          // Set the file to WebRTC Signaling URL with OvenMediaEngine 
-          file: 'wss://{{ host }}:3334/app/{{ stream }}/{{ uuid }}',
-        }
-      ],
-      timeout: 600000,
-      autoStart: true,
-    });
+    var ovenPlayer = null;
+
+    function loadOvenPlayer() {
+      if (ovenPlayer) {
+        ovenPlayer.remove();
+      }
+
+      ovenPlayer = OvenPlayer.create('player_id', {
+        sources: [
+          {
+            label: 'label_for_webrtc',
+            // Set the type to 'webrtc'
+            type: 'webrtc',
+            // Set the file to WebRTC Signaling URL with OvenMediaEngine 
+            file: 'wss://{{ host }}:3334/app/{{ stream }}/{{ uuid }}',
+          }
+        ],
+        autoStart: true,
+        timeout: 600000,
+      });
+
+      ovenPlayer.on('error', function () {
+        setTimeout(function () {
+          loadOvenPlayer();
+        }, 1000)
+      });
+    }
+
+    loadOvenPlayer();
   </script>
 </div>

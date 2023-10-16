@@ -99,7 +99,7 @@ impl Actor for QueueWebSocket {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.hb(ctx);
-        self.manager.do_send(manager::Enqueue {
+        self.manager.do_send(manager::PlayerConnect {
             uuid: self.uuid,
             ip_addr: self.ip_addr.clone(),
             addr: ctx.address(),
@@ -108,7 +108,7 @@ impl Actor for QueueWebSocket {
     }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
-        self.manager.do_send(manager::Dequeue {
+        self.manager.do_send(manager::PlayerDisconnect {
             uuid: self.uuid,
             stream: self.stream.clone(),
         });

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use actix::{Actor, Addr, Context, Handler, Message, Recipient};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ pub struct Handle {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct Enqueue {
+pub struct PlayerConnect {
     pub uuid: Uuid,
     pub ip_addr: String,
     pub addr: Addr<player::QueueWebSocket>,
@@ -25,7 +25,7 @@ pub struct Enqueue {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct Dequeue {
+pub struct PlayerDisconnect {
     pub uuid: Uuid,
     pub stream: String,
 }
@@ -66,6 +66,7 @@ pub struct StreamRemoved {
 #[derive(Default, Debug)]
 struct StreamData {
     queue: HashMap<Uuid, QueuedPlayer>,
+    authorized_players: HashSet<Uuid>,
     queue_recipients: Vec<Recipient<dashboard::Refresh>>,
 }
 
@@ -73,7 +74,6 @@ struct StreamData {
 pub struct QueuedPlayer {
     pub ip_addr: String,
     addr: Addr<player::QueueWebSocket>,
-    allow: bool,
 }
 
 pub struct Manager {
@@ -114,47 +114,29 @@ impl Handler<Handle> for Manager {
     type Result = <Handle as Message>::Result;
 
     fn handle(&mut self, msg: Handle, _ctx: &mut Self::Context) -> Self::Result {
-        if let Some(queued_player) = self
-            .streams
-            .get_mut(&msg.stream)
-            .unwrap()
-            .queue
-            .get_mut(&msg.uuid)
-        {
-            queued_player.allow = msg.allow;
-            if queued_player
-                .addr
-                .try_send(player::Handle(msg.allow))
-                .is_err()
-            {
-                tracing::warn!(
-                    "Actor for {} not receiving messages! Removing queue entry",
-                    msg.uuid
-                );
-
-                self.streams
-                    .get_mut(&msg.stream)
-                    .unwrap()
-                    .queue
-                    .remove(&msg.uuid);
-
-                self.refresh_sockets(None, &msg.stream);
+        let stream = self.streams.get_mut(&msg.stream).unwrap();
+        if let Some(queued_player) = stream.queue.remove(&msg.uuid) {
+            // If allowed, add it to the list of authorized clients
+            if msg.allow {
+                stream.authorized_players.insert(msg.uuid);
             }
+
+            queued_player.addr.do_send(player::Handle(msg.allow));
+            self.refresh_sockets(None, &msg.stream);
         }
     }
 }
 
-impl Handler<Enqueue> for Manager {
-    type Result = <Enqueue as Message>::Result;
+impl Handler<PlayerConnect> for Manager {
+    type Result = <PlayerConnect as Message>::Result;
 
-    fn handle(&mut self, msg: Enqueue, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: PlayerConnect, _ctx: &mut Self::Context) -> Self::Result {
         if let Some(stream) = self.streams.get_mut(&msg.stream) {
             stream.queue.insert(
                 msg.uuid,
                 QueuedPlayer {
                     ip_addr: msg.ip_addr,
                     addr: msg.addr,
-                    allow: false,
                 },
             );
             self.refresh_sockets(Some(msg.uuid), &msg.stream);
@@ -162,12 +144,14 @@ impl Handler<Enqueue> for Manager {
     }
 }
 
-impl Handler<Dequeue> for Manager {
-    type Result = <Dequeue as Message>::Result;
+impl Handler<PlayerDisconnect> for Manager {
+    type Result = <PlayerDisconnect as Message>::Result;
 
-    fn handle(&mut self, msg: Dequeue, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: PlayerDisconnect, _ctx: &mut Self::Context) -> Self::Result {
         if let Some(stream) = self.streams.get_mut(&msg.stream) {
+            // Make sure neither of the lists contain the player
             stream.queue.remove(&msg.uuid);
+            stream.authorized_players.remove(&msg.uuid);
             self.refresh_sockets(None, &msg.stream);
         }
     }
@@ -210,13 +194,13 @@ impl Handler<IsAuthorized> for Manager {
     type Result = <IsAuthorized as Message>::Result;
 
     fn handle(&mut self, msg: IsAuthorized, _ctx: &mut Self::Context) -> Self::Result {
-        if let Some(queued_player) = self
+        if self
             .streams
             .get_mut(&msg.stream)
-            .and_then(|stream| stream.queue.remove(&msg.uuid))
+            .and_then(|stream| stream.authorized_players.get(&msg.uuid))
+            .is_some()
         {
-            queued_player.addr.do_send(player::Stop);
-            queued_player.allow
+            true
         } else {
             tracing::info!("Uuid missing, denied access");
             false
